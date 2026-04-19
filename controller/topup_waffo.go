@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 	waffo "github.com/waffo-com/waffo-go"
 	"github.com/waffo-com/waffo-go/config"
@@ -168,12 +169,10 @@ func RequestWaffoPay(c *gin.Context) {
 	paymentRequestId := merchantOrderId
 
 	// Token 模式下归一化 Amount（存等价美元/CNY 数量，避免 RechargeWaffo 双重放大）
-	amount := req.Amount
-	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		amount = int64(float64(req.Amount) / common.QuotaPerUnit)
-		if amount < 1 {
-			amount = 1
-		}
+	amount, err := normalizeTopUpAmount(req.Amount)
+	if err != nil {
+		c.JSON(200, gin.H{"message": "error", "data": err.Error()})
+		return
 	}
 
 	// 创建本地订单
@@ -357,6 +356,22 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 	LockOrder(merchantOrderId)
 	defer UnlockOrder(merchantOrderId)
 
+	topUp := model.GetTopUpByTradeNo(merchantOrderId)
+	if topUp == nil {
+		log.Printf("Waffo 充值订单不存在: %s", merchantOrderId)
+		sendWaffoWebhookResponse(c, wh, false, "order not found")
+		return
+	}
+	if err := validateWaffoTopUp(result, topUp); err != nil {
+		log.Printf("Waffo 订单校验失败: %v, 订单: %s", err, merchantOrderId)
+		sendWaffoWebhookResponse(c, wh, false, err.Error())
+		return
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		sendWaffoWebhookResponse(c, wh, true, "")
+		return
+	}
+
 	if err := model.RechargeWaffo(merchantOrderId); err != nil {
 		log.Printf("Waffo 充值处理失败: %v, 订单: %s", err, merchantOrderId)
 		sendWaffoWebhookResponse(c, wh, false, err.Error())
@@ -365,6 +380,34 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 
 	log.Printf("Waffo 充值成功 - 订单: %s", merchantOrderId)
 	sendWaffoWebhookResponse(c, wh, true, "")
+}
+
+func validateWaffoTopUp(result *core.PaymentNotificationResult, topUp *model.TopUp) error {
+	if topUp.PaymentMethod != "waffo" {
+		return fmt.Errorf("unexpected payment method: %s", topUp.PaymentMethod)
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected topup status: %s", topUp.Status)
+	}
+	expectedCurrency := getWaffoCurrency()
+	if result.OrderCurrency == "" || result.OrderCurrency != expectedCurrency {
+		return fmt.Errorf("currency mismatch: got %s, expected %s", result.OrderCurrency, expectedCurrency)
+	}
+	actualAmount, err := decimal.NewFromString(result.OrderAmount)
+	if err != nil {
+		return fmt.Errorf("invalid order amount: %w", err)
+	}
+	expectedAmount, err := decimal.NewFromString(formatWaffoAmount(topUp.Money, expectedCurrency))
+	if err != nil {
+		return fmt.Errorf("invalid expected amount: %w", err)
+	}
+	if !actualAmount.Equal(expectedAmount) {
+		return fmt.Errorf("amount mismatch: got %s, expected %s", actualAmount.String(), expectedAmount.String())
+	}
+	return nil
 }
 
 // sendWaffoWebhookResponse 发送签名响应

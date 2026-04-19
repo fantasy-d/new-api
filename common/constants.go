@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	//"os"
 	//"strconv"
+	"fmt"
 	"sync"
 	"time"
 
@@ -184,6 +185,21 @@ var (
 )
 
 var RateLimitKeyExpirationDuration = 20 * time.Minute
+
+func MaxIntValue() int64 {
+	return int64(^uint(0) >> 1)
+}
+
+func MinIntValue() int64 {
+	return -MaxIntValue() - 1
+}
+
+func SafeIntFromInt64(v int64) (int, error) {
+	if v > MaxIntValue() || v < MinIntValue() {
+		return 0, fmt.Errorf("integer overflow: %d out of int range", v)
+	}
+	return int(v), nil
+}
 
 const (
 	UserStatusEnabled  = 1 // don't use 0, 0 is the default value!

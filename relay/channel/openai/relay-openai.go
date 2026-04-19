@@ -336,6 +336,13 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	if info == nil || info.ClientWs == nil || info.TargetWs == nil {
 		return types.NewError(fmt.Errorf("invalid websocket connection"), types.ErrorCodeBadResponse), nil
 	}
+	defer func() {
+		if info.Billing != nil && info.Billing.NeedsRefund() {
+			info.Billing.Refund(c)
+			info.Billing = nil
+			info.FinalPreConsumedQuota = 0
+		}
+	}()
 
 	info.IsStream = true
 	clientConn := info.ClientWs
@@ -527,11 +534,15 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	}
 
 	if usage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, usage, sumUsage)
+		if err := preConsumeUsage(c, info, usage, sumUsage); err != nil {
+			logger.LogError(c, "error consume trailing usage: "+err.Error())
+		}
 	}
 
 	if localUsage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, localUsage, sumUsage)
+		if err := preConsumeUsage(c, info, localUsage, sumUsage); err != nil {
+			logger.LogError(c, "error consume trailing local usage: "+err.Error())
+		}
 	}
 
 	// check usage total tokens, if 0, use local usage
@@ -552,9 +563,11 @@ func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.R
 	totalUsage.InputTokenDetails.AudioTokens += usage.InputTokenDetails.AudioTokens
 	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
 	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
-	// clear usage
-	err := service.PreWssConsumeQuota(ctx, info, usage)
-	return err
+
+	if err := service.PreWssConsumeQuota(ctx, info, usage); err != nil {
+		return err
+	}
+	return service.PostWssConsumeQuota(ctx, info, info.UpstreamModelName, usage, "")
 }
 
 func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

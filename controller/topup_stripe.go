@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
 	"github.com/stripe/stripe-go/v81/webhook"
@@ -91,7 +92,7 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 
 	id := c.GetInt("id")
 	user, _ := model.GetUserById(id, false)
-	chargedMoney := GetChargedAmount(float64(req.Amount), *user)
+	chargedMoney := getStripePayMoney(float64(req.Amount), user.Group)
 
 	reference := fmt.Sprintf("new-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))
@@ -267,10 +268,30 @@ func fulfillOrder(event stripe.Event, referenceId string, customerId string) {
 		"currency":     strings.ToUpper(event.GetObjectValue("currency")),
 		"event_type":   string(event.Type),
 	}
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(payload)); err == nil {
+	if order := model.GetSubscriptionOrderByTradeNo(referenceId); order != nil {
+		if err := validateStripeSubscriptionOrder(event, order); err != nil {
+			log.Println("stripe subscription validation failed:", err.Error(), referenceId)
+			return
+		}
+		if order.Status == common.TopUpStatusSuccess {
+			return
+		}
+		if err := model.CompleteSubscriptionOrderWithAmount(referenceId, common.GetJsonString(payload), stripeEventAmountMajor(event)); err != nil {
+			log.Println("complete subscription order failed:", err.Error(), referenceId)
+		}
 		return
-	} else if err != nil && !errors.Is(err, model.ErrSubscriptionOrderNotFound) {
-		log.Println("complete subscription order failed:", err.Error(), referenceId)
+	}
+
+	topUp := model.GetTopUpByTradeNo(referenceId)
+	if topUp == nil {
+		log.Println("充值订单不存在", referenceId)
+		return
+	}
+	if err := validateStripeTopUp(event, topUp); err != nil {
+		log.Println("stripe topup validation failed:", err.Error(), referenceId)
+		return
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
 		return
 	}
 
@@ -387,13 +408,73 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 	return result.URL, nil
 }
 
-func GetChargedAmount(count float64, user model.User) float64 {
-	topUpGroupRatio := common.GetTopupGroupRatio(user.Group)
-	if topUpGroupRatio == 0 {
-		topUpGroupRatio = 1
-	}
+func stripeAmountToMinorUnits(amount float64) int64 {
+	return decimal.NewFromFloat(amount).Mul(decimal.NewFromInt(100)).Round(0).IntPart()
+}
 
-	return count * topUpGroupRatio
+func stripeEventAmountTotal(event stripe.Event) (int64, error) {
+	amountTotal := event.GetObjectValue("amount_total")
+	if amountTotal == "" {
+		return 0, errors.New("missing amount_total")
+	}
+	total, err := strconv.ParseInt(amountTotal, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid amount_total: %w", err)
+	}
+	if total <= 0 {
+		return 0, errors.New("amount_total must be positive")
+	}
+	return total, nil
+}
+
+func stripeEventAmountMajor(event stripe.Event) string {
+	total, err := stripeEventAmountTotal(event)
+	if err != nil {
+		return ""
+	}
+	return decimal.NewFromInt(total).Div(decimal.NewFromInt(100)).Round(2).StringFixed(2)
+}
+
+func validateStripeSubscriptionOrder(event stripe.Event, order *model.SubscriptionOrder) error {
+	if order.PaymentMethod != PaymentMethodStripe {
+		return fmt.Errorf("unexpected payment method: %s", order.PaymentMethod)
+	}
+	if order.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if order.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected subscription order status: %s", order.Status)
+	}
+	total, err := stripeEventAmountTotal(event)
+	if err != nil {
+		return err
+	}
+	expectedTotal := stripeAmountToMinorUnits(order.Money)
+	if total != expectedTotal {
+		return fmt.Errorf("amount mismatch: got %d, expected %d", total, expectedTotal)
+	}
+	return nil
+}
+
+func validateStripeTopUp(event stripe.Event, topUp *model.TopUp) error {
+	if topUp.PaymentMethod != PaymentMethodStripe {
+		return fmt.Errorf("unexpected payment method: %s", topUp.PaymentMethod)
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected topup status: %s", topUp.Status)
+	}
+	total, err := stripeEventAmountTotal(event)
+	if err != nil {
+		return err
+	}
+	expectedTotal := stripeAmountToMinorUnits(topUp.Money)
+	if total != expectedTotal {
+		return fmt.Errorf("amount mismatch: got %d, expected %d", total, expectedTotal)
+	}
+	return nil
 }
 
 func getStripePayMoney(amount float64, group string) float64 {

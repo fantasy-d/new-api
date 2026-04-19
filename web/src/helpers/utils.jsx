@@ -620,10 +620,10 @@ export const calculateModelPrice = ({
 }) => {
   // 1. 选择实际使用的分组
   let usedGroup = selectedGroup;
-  let usedGroupRatio = groupRatio[selectedGroup];
+  let usedGroupRatio = 1; // 强制设为 1，不计入分组倍率
 
-  if (selectedGroup === 'all' || usedGroupRatio === undefined) {
-    // 在模型可用分组中选择倍率最小的分组，若无则使用 1
+  if (selectedGroup === 'all') {
+    // 在模型可用分组中选择倍率最小的分组作为显示分组名称，但倍率计算仍使用 1
     let minRatio = Number.POSITIVE_INFINITY;
     if (
       Array.isArray(record.enable_groups) &&
@@ -634,14 +634,8 @@ export const calculateModelPrice = ({
         if (r !== undefined && r < minRatio) {
           minRatio = r;
           usedGroup = g;
-          usedGroupRatio = r;
         }
       });
-    }
-
-    // 如果找不到合适分组倍率，回退为 1
-    if (usedGroupRatio === undefined) {
-      usedGroupRatio = 1;
     }
   }
 

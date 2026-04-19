@@ -107,12 +107,18 @@ func refreshCodexOAuthToken(
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	// Use a common browser User-Agent to avoid 403 blocks from OpenAI/Cloudflare
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("codex oauth refresh failed: status=%d", resp.StatusCode)
+	}
 
 	var payload struct {
 		AccessToken  string `json:"access_token"`
@@ -122,9 +128,6 @@ func refreshCodexOAuthToken(
 
 	if err := common.DecodeJson(resp.Body, &payload); err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("codex oauth refresh failed: status=%d", resp.StatusCode)
 	}
 
 	if strings.TrimSpace(payload.AccessToken) == "" || strings.TrimSpace(payload.RefreshToken) == "" || payload.ExpiresIn <= 0 {
@@ -169,12 +172,18 @@ func exchangeCodexAuthorizationCode(
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	// Use a common browser User-Agent to avoid 403 blocks from OpenAI/Cloudflare
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("codex oauth code exchange failed: status=%d", resp.StatusCode)
+	}
 
 	var payload struct {
 		AccessToken  string `json:"access_token"`
@@ -183,9 +192,6 @@ func exchangeCodexAuthorizationCode(
 	}
 	if err := common.DecodeJson(resp.Body, &payload); err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("codex oauth code exchange failed: status=%d", resp.StatusCode)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" || strings.TrimSpace(payload.RefreshToken) == "" || payload.ExpiresIn <= 0 {
 		return nil, errors.New("codex oauth token response missing fields")

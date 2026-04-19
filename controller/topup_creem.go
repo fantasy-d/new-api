@@ -5,8 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -14,9 +12,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 )
 
@@ -38,10 +38,6 @@ func generateCreemSignature(payload string, secret string) string {
 func verifyCreemSignature(payload string, signature string, secret string) bool {
 	if secret == "" {
 		log.Printf("Creem webhook secret not set")
-		if setting.CreemTestMode {
-			log.Printf("Skip Creem webhook sign verify in test mode")
-			return true
-		}
 		return false
 	}
 
@@ -78,7 +74,7 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 
 	// 解析产品列表
 	var products []CreemProduct
-	err := json.Unmarshal([]byte(setting.CreemProducts), &products)
+	err := common.Unmarshal([]byte(setting.CreemProducts), &products)
 	if err != nil {
 		log.Println("解析Creem产品列表失败", err)
 		c.JSON(200, gin.H{"message": "error", "data": "产品配置错误"})
@@ -303,12 +299,23 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	// Try complete subscription order first
 	LockOrder(referenceId)
 	defer UnlockOrder(referenceId)
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(event)); err == nil {
+	if order := model.GetSubscriptionOrderByTradeNo(referenceId); order != nil {
+		if err := validateCreemSubscriptionOrder(event, order); err != nil {
+			log.Printf("Creem订阅订单校验失败: %s, 订单号: %s", err.Error(), referenceId)
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		if order.Status == common.TopUpStatusSuccess {
+			c.Status(http.StatusOK)
+			return
+		}
+		paidAmount := decimal.NewFromInt(int64(event.Object.Order.AmountPaid)).Div(decimal.NewFromInt(100)).Round(2).StringFixed(2)
+		if err := model.CompleteSubscriptionOrderWithAmount(referenceId, common.GetJsonString(event), paidAmount); err != nil {
+			log.Printf("Creem订阅订单处理失败: %s, 订单号: %s", err.Error(), referenceId)
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
 		c.Status(http.StatusOK)
-		return
-	} else if err != nil && !errors.Is(err, model.ErrSubscriptionOrderNotFound) {
-		log.Printf("Creem订阅订单处理失败: %s, 订单号: %s", err.Error(), referenceId)
-		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -331,6 +338,11 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	topUp := model.GetTopUpByTradeNo(referenceId)
 	if topUp == nil {
 		log.Printf("Creem充值订单不存在: %s", referenceId)
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	if err := validateCreemTopUp(event, topUp); err != nil {
+		log.Printf("Creem充值订单校验失败: %s, 订单号: %s", err.Error(), referenceId)
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
@@ -363,6 +375,86 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	log.Printf("Creem充值成功 - 订单号: %s, 充值额度: %d, 支付金额: %.2f",
 		referenceId, topUp.Amount, topUp.Money)
 	c.Status(http.StatusOK)
+}
+
+func getCreemProducts() ([]CreemProduct, error) {
+	var products []CreemProduct
+	if err := common.Unmarshal([]byte(setting.CreemProducts), &products); err != nil {
+		return nil, err
+	}
+	return products, nil
+}
+
+func findCreemProduct(productId string) (*CreemProduct, error) {
+	products, err := getCreemProducts()
+	if err != nil {
+		return nil, err
+	}
+	for i := range products {
+		if products[i].ProductId == productId {
+			return &products[i], nil
+		}
+	}
+	return nil, fmt.Errorf("unknown creem product: %s", productId)
+}
+
+func creemMoneyToMinorUnits(amount float64) int64 {
+	return decimal.NewFromFloat(amount).Mul(decimal.NewFromInt(100)).Round(0).IntPart()
+}
+
+func validateCreemSubscriptionOrder(event *CreemWebhookEvent, order *model.SubscriptionOrder) error {
+	if order.PaymentMethod != PaymentMethodCreem {
+		return fmt.Errorf("unexpected payment method: %s", order.PaymentMethod)
+	}
+	if order.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if order.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected subscription order status: %s", order.Status)
+	}
+	plan, err := model.GetSubscriptionPlanById(order.PlanId)
+	if err != nil {
+		return err
+	}
+	if plan.CreemProductId == "" || plan.CreemProductId != event.Object.Product.Id {
+		return fmt.Errorf("product mismatch: got %s, expected %s", event.Object.Product.Id, plan.CreemProductId)
+	}
+	if creemMoneyToMinorUnits(order.Money) != int64(event.Object.Order.AmountPaid) {
+		return fmt.Errorf("amount mismatch: got %d, expected %d", event.Object.Order.AmountPaid, creemMoneyToMinorUnits(order.Money))
+	}
+	if plan.Currency != "" && !strings.EqualFold(plan.Currency, event.Object.Order.Currency) {
+		return fmt.Errorf("currency mismatch: got %s, expected %s", event.Object.Order.Currency, plan.Currency)
+	}
+	return nil
+}
+
+func validateCreemTopUp(event *CreemWebhookEvent, topUp *model.TopUp) error {
+	if topUp.PaymentMethod != PaymentMethodCreem {
+		return fmt.Errorf("unexpected payment method: %s", topUp.PaymentMethod)
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected topup status: %s", topUp.Status)
+	}
+	product, err := findCreemProduct(event.Object.Product.Id)
+	if err != nil {
+		return err
+	}
+	if product.Quota != topUp.Amount {
+		return fmt.Errorf("quota mismatch: got %d, expected %d", topUp.Amount, product.Quota)
+	}
+	if creemMoneyToMinorUnits(topUp.Money) != int64(event.Object.Order.AmountPaid) {
+		return fmt.Errorf("amount mismatch: got %d, expected %d", event.Object.Order.AmountPaid, creemMoneyToMinorUnits(topUp.Money))
+	}
+	if creemMoneyToMinorUnits(product.Price) != int64(event.Object.Order.AmountPaid) {
+		return fmt.Errorf("product amount mismatch: got %d, expected %d", event.Object.Order.AmountPaid, creemMoneyToMinorUnits(product.Price))
+	}
+	if product.Currency != "" && !strings.EqualFold(product.Currency, event.Object.Order.Currency) {
+		return fmt.Errorf("currency mismatch: got %s, expected %s", event.Object.Order.Currency, product.Currency)
+	}
+	return nil
 }
 
 type CreemCheckoutRequest struct {
@@ -409,7 +501,7 @@ func genCreemLink(referenceId string, product *CreemProduct, email string, usern
 	}
 
 	// 序列化请求数据
-	jsonData, err := json.Marshal(requestData)
+	jsonData, err := common.Marshal(requestData)
 	if err != nil {
 		return "", fmt.Errorf("序列化请求数据失败: %v", err)
 	}
@@ -451,7 +543,7 @@ func genCreemLink(referenceId string, product *CreemProduct, email string, usern
 	}
 	// 解析响应
 	var checkoutResp CreemCheckoutResponse
-	err = json.Unmarshal(body, &checkoutResp)
+	err = common.Unmarshal(body, &checkoutResp)
 	if err != nil {
 		return "", fmt.Errorf("解析响应失败: %v", err)
 	}

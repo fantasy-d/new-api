@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/samber/hot"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -506,6 +507,11 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 
 // Complete a subscription order (idempotent). Creates a UserSubscription snapshot from the plan.
 func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
+	return CompleteSubscriptionOrderWithAmount(tradeNo, providerPayload, "")
+}
+
+// CompleteSubscriptionOrderWithAmount adds a model-layer money check as a second line of defense.
+func CompleteSubscriptionOrderWithAmount(tradeNo string, providerPayload string, paidAmount string) error {
 	if tradeNo == "" {
 		return errors.New("tradeNo is empty")
 	}
@@ -528,6 +534,16 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
 		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
+		}
+		if strings.TrimSpace(paidAmount) != "" {
+			actualMoney, err := decimal.NewFromString(strings.TrimSpace(paidAmount))
+			if err != nil {
+				return fmt.Errorf("invalid paid amount: %w", err)
+			}
+			expectedMoney := decimal.NewFromFloat(order.Money).Round(2)
+			if !actualMoney.Round(2).Equal(expectedMoney) {
+				return fmt.Errorf("amount mismatch: got %s, expected %s", actualMoney.Round(2).StringFixed(2), expectedMoney.StringFixed(2))
+			}
 		}
 		plan, err := GetSubscriptionPlanById(order.PlanId)
 		if err != nil {

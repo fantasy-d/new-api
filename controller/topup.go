@@ -82,20 +82,20 @@ func GetTopUpInfo(c *gin.Context) {
 		"enable_online_topup": operation_setting.PayAddress != "" && operation_setting.EpayId != "" && operation_setting.EpayKey != "",
 		"enable_stripe_topup": setting.StripeApiSecret != "" && setting.StripeWebhookSecret != "" && setting.StripePriceId != "",
 		"enable_creem_topup":  setting.CreemApiKey != "" && setting.CreemProducts != "[]",
-		"enable_waffo_topup": enableWaffo,
+		"enable_waffo_topup":  enableWaffo,
 		"waffo_pay_methods": func() interface{} {
 			if enableWaffo {
 				return setting.GetWaffoPayMethods()
 			}
 			return nil
 		}(),
-		"creem_products": setting.CreemProducts,
-		"pay_methods":         payMethods,
-		"min_topup":           operation_setting.MinTopUp,
-		"stripe_min_topup":    setting.StripeMinTopUp,
-		"waffo_min_topup":     setting.WaffoMinTopUp,
-		"amount_options":      operation_setting.GetPaymentSetting().AmountOptions,
-		"discount":            operation_setting.GetPaymentSetting().AmountDiscount,
+		"creem_products":   setting.CreemProducts,
+		"pay_methods":      payMethods,
+		"min_topup":        operation_setting.MinTopUp,
+		"stripe_min_topup": setting.StripeMinTopUp,
+		"waffo_min_topup":  setting.WaffoMinTopUp,
+		"amount_options":   operation_setting.GetPaymentSetting().AmountOptions,
+		"discount":         operation_setting.GetPaymentSetting().AmountDiscount,
 	}
 	common.ApiSuccess(c, data)
 }
@@ -163,6 +163,79 @@ func getMinTopup() int64 {
 	return int64(minTopup)
 }
 
+func epayMoneyToDecimal(money string) (decimal.Decimal, error) {
+	value, err := decimal.NewFromString(money)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return value.Round(2), nil
+}
+
+func topUpMoneyToDecimal(topUp *model.TopUp) decimal.Decimal {
+	return decimal.NewFromFloat(topUp.Money).Round(2)
+}
+
+func validateEpayTopUp(verifyInfo *epay.VerifyRes, topUp *model.TopUp) error {
+	if topUp == nil {
+		return fmt.Errorf("topup order not found")
+	}
+	if topUp.PaymentMethod == PaymentMethodStripe || topUp.PaymentMethod == PaymentMethodCreem || topUp.PaymentMethod == "waffo" {
+		return fmt.Errorf("unexpected payment method: %s", topUp.PaymentMethod)
+	}
+	if topUp.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if topUp.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected topup status: %s", topUp.Status)
+	}
+	actualMoney, err := epayMoneyToDecimal(verifyInfo.Money)
+	if err != nil {
+		return fmt.Errorf("invalid epay money: %w", err)
+	}
+	expectedMoney := topUpMoneyToDecimal(topUp)
+	if !actualMoney.Equal(expectedMoney) {
+		return fmt.Errorf("amount mismatch: got %s, expected %s", actualMoney.StringFixed(2), expectedMoney.StringFixed(2))
+	}
+	return nil
+}
+
+func validateEpaySubscriptionOrder(verifyInfo *epay.VerifyRes, order *model.SubscriptionOrder) error {
+	if order == nil {
+		return fmt.Errorf("subscription order not found")
+	}
+	if order.PaymentMethod == PaymentMethodStripe || order.PaymentMethod == PaymentMethodCreem || order.PaymentMethod == "waffo" {
+		return fmt.Errorf("unexpected payment method: %s", order.PaymentMethod)
+	}
+	if order.Status == common.TopUpStatusSuccess {
+		return nil
+	}
+	if order.Status != common.TopUpStatusPending {
+		return fmt.Errorf("unexpected subscription order status: %s", order.Status)
+	}
+	actualMoney, err := epayMoneyToDecimal(verifyInfo.Money)
+	if err != nil {
+		return fmt.Errorf("invalid epay money: %w", err)
+	}
+	expectedMoney := decimal.NewFromFloat(order.Money).Round(2)
+	if !actualMoney.Equal(expectedMoney) {
+		return fmt.Errorf("amount mismatch: got %s, expected %s", actualMoney.StringFixed(2), expectedMoney.StringFixed(2))
+	}
+	return nil
+}
+
+func normalizeTopUpAmount(amount int64) (int64, error) {
+	if operation_setting.GetQuotaDisplayType() != operation_setting.QuotaDisplayTypeTokens {
+		return amount, nil
+	}
+	dAmount := decimal.NewFromInt(amount)
+	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+	normalized := dAmount.Div(dQuotaPerUnit)
+	if !normalized.Equal(normalized.Truncate(0)) {
+		return 0, fmt.Errorf("token 模式下充值数量必须是 %s 的整数倍", logger.FormatQuota(int(common.QuotaPerUnit)))
+	}
+	return normalized.IntPart(), nil
+}
+
 func RequestEpay(c *gin.Context) {
 	var req EpayRequest
 	err := c.ShouldBindJSON(&req)
@@ -215,11 +288,10 @@ func RequestEpay(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "error", "data": "拉起支付失败"})
 		return
 	}
-	amount := req.Amount
-	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		dAmount := decimal.NewFromInt(int64(amount))
-		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
-		amount = dAmount.Div(dQuotaPerUnit).IntPart()
+	amount, err := normalizeTopUpAmount(req.Amount)
+	if err != nil {
+		c.JSON(200, gin.H{"message": "error", "data": err.Error()})
+		return
 	}
 	topUp := &model.TopUp{
 		UserId:        id,
@@ -340,29 +412,17 @@ func EpayNotify(c *gin.Context) {
 			log.Printf("易支付回调未找到订单: %v", verifyInfo)
 			return
 		}
-		if topUp.PaymentMethod == "stripe" || topUp.PaymentMethod == "creem" || topUp.PaymentMethod == "waffo" {
-			log.Printf("易支付回调订单支付方式不匹配: %s, 订单号: %s", topUp.PaymentMethod, verifyInfo.ServiceTradeNo)
+		if err := validateEpayTopUp(verifyInfo, topUp); err != nil {
+			log.Printf("易支付回调订单校验失败: %v, 订单号: %s", err, verifyInfo.ServiceTradeNo)
 			return
 		}
-		if topUp.Status == "pending" {
-			topUp.Status = "success"
-			err := topUp.Update()
+		if topUp.Status == common.TopUpStatusPending {
+			err = model.RechargeEpay(verifyInfo.ServiceTradeNo)
 			if err != nil {
-				log.Printf("易支付回调更新订单失败: %v", topUp)
-				return
-			}
-			//user, _ := model.GetUserById(topUp.UserId, false)
-			//user.Quota += topUp.Amount * 500000
-			dAmount := decimal.NewFromInt(int64(topUp.Amount))
-			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
-			quotaToAdd := int(dAmount.Mul(dQuotaPerUnit).IntPart())
-			err = model.IncreaseUserQuota(topUp.UserId, quotaToAdd, true)
-			if err != nil {
-				log.Printf("易支付回调更新用户失败: %v", topUp)
+				log.Printf("易支付回调更新用户失败: %v", err)
 				return
 			}
 			log.Printf("易支付回调更新用户成功 %v", topUp)
-			model.RecordLog(topUp.UserId, model.LogTypeTopup, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quotaToAdd), topUp.Money))
 		}
 	} else {
 		log.Printf("易支付异常回调: %v", verifyInfo)
@@ -467,4 +527,3 @@ func AdminCompleteTopUp(c *gin.Context) {
 	}
 	common.ApiSuccess(c, nil)
 }
-

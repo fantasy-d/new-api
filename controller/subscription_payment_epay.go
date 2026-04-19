@@ -156,7 +156,13 @@ func SubscriptionEpayNotify(c *gin.Context) {
 	LockOrder(verifyInfo.ServiceTradeNo)
 	defer UnlockOrder(verifyInfo.ServiceTradeNo)
 
-	if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo)); err != nil {
+	order := model.GetSubscriptionOrderByTradeNo(verifyInfo.ServiceTradeNo)
+	if err := validateEpaySubscriptionOrder(verifyInfo, order); err != nil {
+		_, _ = c.Writer.Write([]byte("fail"))
+		return
+	}
+
+	if err := model.CompleteSubscriptionOrderWithAmount(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), verifyInfo.Money); err != nil {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}
@@ -205,7 +211,12 @@ func SubscriptionEpayReturn(c *gin.Context) {
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo)); err != nil {
+		order := model.GetSubscriptionOrderByTradeNo(verifyInfo.ServiceTradeNo)
+		if err := validateEpaySubscriptionOrder(verifyInfo, order); err != nil {
+			c.Redirect(http.StatusFound, system_setting.ServerAddress+"/console/topup?pay=fail")
+			return
+		}
+		if err := model.CompleteSubscriptionOrderWithAmount(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), verifyInfo.Money); err != nil {
 			c.Redirect(http.StatusFound, system_setting.ServerAddress+"/console/topup?pay=fail")
 			return
 		}
