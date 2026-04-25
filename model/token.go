@@ -189,11 +189,14 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	if key == "" {
 		return nil, ErrTokenNotProvided
 	}
+	common.SysLog(fmt.Sprintf("Validating token: %s***", key[:8]))
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
+		common.SysLog(fmt.Sprintf("Token found: status=%d, quota=%d, unlimited=%v", token.Status, token.RemainQuota, token.UnlimitedQuota))
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||
 			token.Status != common.TokenStatusEnabled {
+			common.SysLog(fmt.Sprintf("Token invalid due to status: %d", token.Status))
 			return token, ErrTokenInvalid
 		}
 		if token.ExpiredTime != -1 && token.ExpiredTime < common.GetTimestamp() {
@@ -266,10 +269,10 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 	if !fromDB && common.RedisEnabled {
 		// Try Redis first
 		token, err := cacheGetTokenByKey(key)
-		if err == nil {
+		if err == nil && token != nil && token.Status != 0 {
 			return token, nil
 		}
-		// Don't return error - fall through to DB
+		// If cache is invalid or corrupted (status 0), fallback to DB
 	}
 	fromDB = true
 	err = DB.Where(commonKeyCol+" = ?", key).First(&token).Error

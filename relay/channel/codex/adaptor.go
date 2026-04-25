@@ -94,7 +94,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		Model:  request.Model,
 		Stream: lo.ToPtr(true),
 	}
-	common.SysLog(fmt.Sprintf("Codex request: model=%s, stream=%v", responsesReq.Model, *responsesReq.Stream))
+	common.SysLog(fmt.Sprintf("Codex request: model=%s, stream=%v, tools=%d", responsesReq.Model, *responsesReq.Stream, len(request.Tools)))
 
 	maxTokens := request.GetMaxTokens()
 	if maxTokens > 0 {
@@ -107,27 +107,81 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		responsesReq.TopP = request.TopP
 	}
 
+	// Forward Tools and ToolChoice to upstream (convert to flat format)
+	if len(request.Tools) > 0 {
+		var codexTools []map[string]any
+		for _, tool := range request.Tools {
+			flatTool := map[string]any{
+				"type":        tool.Type,
+				"name":        tool.Function.Name,
+				"description": tool.Function.Description,
+				"parameters":  tool.Function.Parameters,
+			}
+			codexTools = append(codexTools, flatTool)
+		}
+		if b, err := json.Marshal(codexTools); err == nil {
+			responsesReq.Tools = b
+		}
+	}
+	if request.ToolChoice != nil {
+		if b, err := json.Marshal(request.ToolChoice); err == nil {
+			responsesReq.ToolChoice = b
+		}
+	}
+
 	// Convert messages or prompt to input
+	var instructions []string
 	if len(request.Messages) > 0 {
 		var codexInput []map[string]any
 		for _, msg := range request.Messages {
 			content := msg.StringContent()
+			if msg.Role == "system" {
+				instructions = append(instructions, content)
+				continue
+			}
+
+			role := msg.Role
+			contentType := "input_text"
+			if role == "assistant" {
+				contentType = "output_text"
+				// Handle tool_calls in history
+				if content == "" && len(msg.ToolCalls) > 0 {
+					b, _ := json.Marshal(msg.ToolCalls)
+					content = string(b)
+				}
+			} else if role == "tool" {
+				// Codex doesn't have a tool role, wrap it in user message
+				role = "user"
+				content = fmt.Sprintf("Tool result [%s]: %s", msg.ToolCallId, content)
+			}
+
+			if content == "" {
+				continue
+			}
+
 			codexMsg := map[string]any{
-				"role": msg.Role,
+				"role": role,
 				"content": []map[string]any{
 					{
-						"type": "input_text",
+						"type": contentType,
 						"text": content,
 					},
 				},
 			}
 			codexInput = append(codexInput, codexMsg)
 		}
-		input, err := json.Marshal(codexInput)
-		if err != nil {
-			return nil, err
+		if len(codexInput) > 0 {
+			input, err := json.Marshal(codexInput)
+			if err != nil {
+				return nil, err
+			}
+			responsesReq.Input = input
 		}
-		responsesReq.Input = input
+		if len(instructions) > 0 {
+			if b, err := json.Marshal(strings.Join(instructions, "\n")); err == nil {
+				responsesReq.Instructions = b
+			}
+		}
 	} else if request.Prompt != nil {
 		promptStr := ""
 		switch v := request.Prompt.(type) {
@@ -251,6 +305,10 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 	return nil, errors.New("not supported")
 }
 
+func (a *Adaptor) ConvertRealtimeRequest(c *gin.Context, info *relaycommon.RelayInfo, request any) (any, error) {
+	return nil, errors.New("not supported")
+}
+
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
@@ -264,8 +322,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return openai.OaiResponsesCompactionHandler(c, resp)
 	}
 
-	// If client wants stream, use the default stream handler
+	isChatPath := strings.Contains(c.Request.URL.Path, "/chat/")
+	isCompletionPath := strings.Contains(c.Request.URL.Path, "/completions") && !isChatPath
+
+	// If client wants stream
 	if info.IsStream {
+		if info.RelayMode == relayconstant.RelayModeChatCompletions || info.RelayMode == relayconstant.RelayModeCompletions || isChatPath || isCompletionPath {
+			return openai.OaiResponsesToChatStreamHandler(c, info, resp)
+		}
 		return openai.OaiResponsesStreamHandler(c, info, resp)
 	}
 
@@ -314,11 +378,11 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	}
 
 	fullText := responseTextBuilder.String()
-	common.SysLog(fmt.Sprintf("Combined response [Mode: %d]: %d chars", info.RelayMode, len(fullText)))
+	common.SysLog(fmt.Sprintf("Combined response [Path: %s, Mode: %d]: %d chars", c.Request.URL.Path, info.RelayMode, len(fullText)))
 
-	// Convert to standard OpenAI format for Chat, Completions, and Responses modes
+	// Convert to standard OpenAI format for Chat and Completions paths
 	var finalResponse any
-	if info.RelayMode == relayconstant.RelayModeChatCompletions {
+	if isChatPath || info.RelayMode == relayconstant.RelayModeChatCompletions {
 		finalResponse = gin.H{
 			"id":      lastResponse.ID,
 			"object":  "chat.completion",
@@ -336,7 +400,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			},
 			"usage": lastUsage,
 		}
-	} else if info.RelayMode == relayconstant.RelayModeCompletions {
+	} else if isCompletionPath || info.RelayMode == relayconstant.RelayModeCompletions {
 		finalResponse = gin.H{
 			"id":      lastResponse.ID,
 			"object":  "text_completion",
@@ -351,7 +415,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			},
 			"usage": lastUsage,
 		}
-	} else if info.RelayMode == relayconstant.RelayModeResponses {
+	} else {
+		// Native Responses format
 		if len(lastResponse.Output) == 0 {
 			lastResponse.Output = []dto.ResponsesOutput{
 				{
@@ -368,8 +433,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 				},
 			}
 		}
-		finalResponse = lastResponse
-	} else {
 		finalResponse = lastResponse
 	}
 

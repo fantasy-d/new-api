@@ -87,9 +87,10 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 
 	// Try getting from Redis first
 	userCache, err = cacheGetUserBase(userId)
-	if err == nil {
+	if err == nil && userCache != nil && userCache.Status != 0 {
 		return userCache, nil
 	}
+	// If cache is invalid or corrupted (status 0), fallback to DB
 
 	// If Redis fails, get from DB
 	fromDB = true
