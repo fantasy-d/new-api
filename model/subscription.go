@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/samber/hot"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -178,6 +179,12 @@ type SubscriptionPlan struct {
 
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
+
+	GroupIdentifier string `json:"group_identifier" gorm:"type:varchar(64);default:'';index"`
+
+	RequestRateLimitNum      int `json:"request_rate_limit_num" gorm:"type:int;default:0"`
+	RequestRateLimitSuccess  int `json:"request_rate_limit_success" gorm:"type:int;default:0"`
+	RequestRateLimitDuration int `json:"request_rate_limit_duration" gorm:"type:int;default:0"`
 }
 
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
@@ -190,6 +197,44 @@ func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
 func (p *SubscriptionPlan) BeforeUpdate(tx *gorm.DB) error {
 	p.UpdatedAt = common.GetTimestamp()
 	return nil
+}
+
+func GetUserActiveSubscriptionRateLimit(userId int) (total int, success int, duration int, found bool) {
+	nowUnix := GetDBTimestamp()
+	var plans []SubscriptionPlan
+	err := DB.Table("user_subscriptions").
+		Joins("JOIN subscription_plans ON user_subscriptions.plan_id = subscription_plans.id").
+		Where("user_subscriptions.user_id = ? AND user_subscriptions.status = ? AND user_subscriptions.end_time > ?", userId, "active", nowUnix).
+		Where("subscription_plans.request_rate_limit_num > 0 OR subscription_plans.request_rate_limit_success > 0").
+		Select("subscription_plans.*").
+		Find(&plans).Error
+	if err != nil || len(plans) == 0 {
+		return 0, 0, 0, false
+	}
+
+	// Find the best rate limit (highest Num/Duration ratio)
+	bestNum := 0
+	bestSuccess := 0
+	bestDuration := 0
+	bestRatio := -1.0
+
+	for _, p := range plans {
+		if p.RequestRateLimitDuration <= 0 {
+			continue
+		}
+		// Calculate QPS as decision factor
+		ratio := float64(p.RequestRateLimitNum) / float64(p.RequestRateLimitDuration)
+		if ratio > bestRatio {
+			bestRatio = ratio
+			bestNum = p.RequestRateLimitNum
+			bestSuccess = p.RequestRateLimitSuccess
+			bestDuration = p.RequestRateLimitDuration
+		}
+	}
+	if bestRatio < 0 {
+		return 0, 0, 0, false
+	}
+	return bestNum, bestSuccess, bestDuration, true
 }
 
 // Subscription order (payment -> webhook -> create UserSubscription)
@@ -347,6 +392,52 @@ func calcNextResetTime(base time.Time, plan *SubscriptionPlan, endUnix int64) in
 	return next.Unix()
 }
 
+func BuySubscriptionWithBalance(userId int, planId int) error {
+	if userId <= 0 {
+		return errors.New("invalid user id")
+	}
+	plan, err := GetSubscriptionPlanById(planId)
+	if err != nil {
+		return err
+	}
+	if !plan.Enabled {
+		return errors.New("该套餐已禁用")
+	}
+
+	// 计算所需配额
+	// 系统余额通常以 USD 为单位存储在 quota 中
+	// 如果套餐是 CNY，则根据汇率转换
+	priceInUsd := plan.PriceAmount
+	if plan.Currency == "CNY" {
+		priceInUsd = plan.PriceAmount / operation_setting.USDExchangeRate
+	}
+	requiredQuota := int(priceInUsd * float64(common.QuotaPerUnit))
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&user, userId).Error; err != nil {
+			return err
+		}
+
+		if user.Quota < requiredQuota {
+			return errors.New("余额不足")
+		}
+
+		// 1. 扣除余额
+		if err := tx.Model(&user).Update("quota", gorm.Expr("quota - ?", requiredQuota)).Error; err != nil {
+			return err
+		}
+
+		// 2. 创建订阅
+		_, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "balance")
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
 func GetSubscriptionPlanById(id int) (*SubscriptionPlan, error) {
 	return getSubscriptionPlanByIdTx(nil, id)
 }
@@ -445,6 +536,41 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if userId <= 0 {
 		return nil, errors.New("invalid user id")
 	}
+
+	nowUnix := GetDBTimestamp()
+
+	// 1. 尝试查找可顺延的活跃订阅
+	// 如果配置了 GroupIdentifier，则跨套餐顺延同组订阅；否则仅顺延相同 plan_id 的订阅。
+	var existingSub UserSubscription
+	query := tx.Set("gorm:query_option", "FOR UPDATE").
+		Table("user_subscriptions").
+		Joins("JOIN subscription_plans ON user_subscriptions.plan_id = subscription_plans.id").
+		Where("user_subscriptions.user_id = ? AND user_subscriptions.status = ? AND user_subscriptions.end_time > ?", userId, "active", nowUnix)
+
+	if plan.GroupIdentifier != "" {
+		query = query.Where("subscription_plans.group_identifier = ?", plan.GroupIdentifier)
+	} else {
+		query = query.Where("user_subscriptions.plan_id = ?", plan.Id)
+	}
+
+	err := query.Select("user_subscriptions.*").Order("user_subscriptions.end_time desc").First(&existingSub).Error
+
+	if err == nil {
+		// 触发“时长顺延”逻辑
+		newEndTime, err := calcPlanEndTime(time.Unix(existingSub.EndTime, 0), plan)
+		if err != nil {
+			return nil, fmt.Errorf("计算续期结束时间失败: %w", err)
+		}
+		existingSub.EndTime = newEndTime
+		// 注意：此处不累加配额 (AmountTotal 保持不变)
+		if err := tx.Save(&existingSub).Error; err != nil {
+			return nil, err
+		}
+		_ = invalidateUserCache(userId)
+		return &existingSub, nil
+	}
+
+	// 2. 如果没有可续期的订阅，检查限购并创建新订阅
 	if plan.MaxPurchasePerUser > 0 {
 		var count int64
 		if err := tx.Model(&UserSubscription{}).
@@ -456,7 +582,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, errors.New("已达到该套餐购买上限")
 		}
 	}
-	nowUnix := GetDBTimestamp()
+
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
 	if err != nil {
@@ -502,6 +628,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
 	}
+	_ = invalidateUserCache(userId)
 	return sub, nil
 }
 

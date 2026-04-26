@@ -25,19 +25,22 @@ function parseJSON(str, fallback) {
   }
 }
 
-function buildRows(groupRatioStr, userUsableGroupsStr) {
+function buildRows(groupRatioStr, userUsableGroupsStr, groupLevelStr) {
   const ratioMap = parseJSON(groupRatioStr, {});
   const usableMap = parseJSON(userUsableGroupsStr, {});
+  const levelMap = parseJSON(groupLevelStr, {});
 
   const allNames = new Set([
     ...Object.keys(ratioMap),
     ...Object.keys(usableMap),
+    ...Object.keys(levelMap),
   ]);
 
   return Array.from(allNames).map((name) => ({
     _id: uid(),
     name,
     ratio: ratioMap[name] ?? 1,
+    level: levelMap[name] ?? 1,
     selectable: name in usableMap,
     description: usableMap[name] ?? '',
   }));
@@ -46,10 +49,12 @@ function buildRows(groupRatioStr, userUsableGroupsStr) {
 export function serializeGroupTable(rows) {
   const groupRatio = {};
   const userUsableGroups = {};
+  const groupLevel = {};
 
   rows.forEach((row) => {
     if (!row.name) return;
     groupRatio[row.name] = row.ratio;
+    groupLevel[row.name] = row.level;
     if (row.selectable) {
       userUsableGroups[row.name] = row.description;
     }
@@ -58,14 +63,20 @@ export function serializeGroupTable(rows) {
   return {
     GroupRatio: JSON.stringify(groupRatio, null, 2),
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
+    GroupLevel: JSON.stringify(groupLevel, null, 2),
   };
 }
 
-export default function GroupTable({ groupRatio, userUsableGroups, onChange }) {
+export default function GroupTable({
+  groupRatio,
+  userUsableGroups,
+  groupLevel,
+  onChange,
+}) {
   const { t } = useTranslation();
 
   const [rows, setRows] = useState(() =>
-    buildRows(groupRatio, userUsableGroups),
+    buildRows(groupRatio, userUsableGroups, groupLevel),
   );
 
   // Use functional setRows to keep updateRow/addRow/removeRow referentially
@@ -106,6 +117,7 @@ export default function GroupTable({ groupRatio, userUsableGroups, onChange }) {
           _id: uid(),
           name: newName,
           ratio: 1,
+          level: 1,
           selectable: true,
           description: '',
         },
@@ -166,6 +178,22 @@ export default function GroupTable({ groupRatio, userUsableGroups, onChange }) {
             value={record.ratio}
             style={{ width: '100%' }}
             onChange={(v) => updateRow(record._id, 'ratio', v ?? 0)}
+          />
+        ),
+      },
+      {
+        title: t('等级'),
+        dataIndex: 'level',
+        key: 'level',
+        width: 100,
+        render: (_, record) => (
+          <InputNumber
+            size='small'
+            min={0}
+            precision={0}
+            value={record.level}
+            style={{ width: '100%' }}
+            onChange={(v) => updateRow(record._id, 'level', v ?? 1)}
           />
         ),
       },

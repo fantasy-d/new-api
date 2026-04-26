@@ -281,15 +281,11 @@ const EditRedemptionModal = (props) => {
                     <Col span={24}>
                       <Form.Select
                         field='plan_id'
-                        label={t('绑定订阅套餐（可选）')}
-                        placeholder={t('如果不选择，则为普通额度兑换码')}
+                        label={t('绑定订阅套餐')}
+                        placeholder={t('请选择套餐，默认不绑定')}
                         style={{ width: '100%' }}
+                        rules={[{ required: true, message: t('请选择是否绑定套餐') }]}
                         showClear
-                        onChange={(val) => {
-                          if (val && val !== 0) {
-                            // If plan is selected, maybe set amount/quota to 0 or leave as is
-                          }
-                        }}
                       >
                         <Form.Select.Option value={0}>{t('不绑定套餐（仅充值额度）')}</Form.Select.Option>
                         {plans.map(plan => (
@@ -312,87 +308,112 @@ const EditRedemptionModal = (props) => {
                   </Row>
                 </Card>
 
-                <Card className='!rounded-2xl shadow-sm border-0'>
-                  {/* Header: Quota Settings */}
-                  <div className='flex items-center mb-2'>
-                    <Avatar
-                      size='small'
-                      color='green'
-                      className='mr-2 shadow-md'
-                    >
-                      <IconCreditCard size={16} />
-                    </Avatar>
-                    <div>
-                      <Text className='text-lg font-medium'>
-                        {t('额度设置')}
-                      </Text>
-                      <div className='text-xs text-gray-600'>
-                        {t('设置兑换码的额度和数量')}
+                {values.plan_id === 0 && (
+                  <Card className='!rounded-2xl shadow-sm border-0 mb-6'>
+                    {/* Header: Quota Settings */}
+                    <div className='flex items-center mb-2'>
+                      <Avatar
+                        size='small'
+                        color='green'
+                        className='mr-2 shadow-md'
+                      >
+                        <IconCreditCard size={16} />
+                      </Avatar>
+                      <div>
+                        <Text className='text-lg font-medium'>
+                          {t('额度设置')}
+                        </Text>
+                        <div className='text-xs text-gray-600'>
+                          {t('设置兑换码充值的额度')}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <Row gutter={12}>
-                    <Col span={24}>
-                      <Form.InputNumber
-                        field='amount'
-                        label={t('金额')}
-                        prefix={getCurrencyConfig().symbol}
-                        placeholder={t('输入金额')}
-                        precision={6}
-                        min={0}
-                        step={0.000001}
-                        style={{ width: '100%' }}
-                        onChange={(val) => {
-                          const amount = val === '' || val == null ? 0 : val;
-                          formApiRef.current?.setValue('amount', amount);
-                          formApiRef.current?.setValue(
-                            'quota',
-                            displayAmountToQuota(amount),
-                          );
-                        }}
-                        showClear
-                      />
-                      <div
-                        className='text-xs cursor-pointer mt-1'
-                        style={{ color: 'var(--semi-color-text-2)' }}
-                        onClick={() => setShowQuotaInput((v) => !v)}
-                      >
-                        {showQuotaInput
-                          ? `▾ ${t('收起原生额度输入')}`
-                          : `▸ ${t('使用原生额度输入')}`}
-                      </div>
-                      <div style={{ display: showQuotaInput ? 'block' : 'none' }} className='mt-2'>
+                    <Row gutter={12}>
+                      <Col span={24}>
                         <Form.InputNumber
-                          field='quota'
-                          label={t('额度')}
-                          placeholder={t('输入额度')}
-                          rules={[
-                            { required: true, message: t('请输入额度') },
-                            {
-                              validator: (rule, v) => {
-                                const num = parseInt(v, 10);
-                                return num > 0
-                                  ? Promise.resolve()
-                                  : Promise.reject(t('额度必须大于0'));
-                              },
-                            },
-                          ]}
+                          field='amount'
+                          label={t('金额')}
+                          prefix={getCurrencyConfig().symbol}
+                          placeholder={t('输入金额')}
+                          precision={6}
+                          min={0}
+                          step={0.000001}
+                          style={{ width: '100%' }}
                           onChange={(val) => {
-                            const quota = val === '' || val == null ? 0 : val;
-                            formApiRef.current?.setValue('quota', quota);
+                            const amount = val === '' || val == null ? 0 : val;
+                            formApiRef.current?.setValue('amount', amount);
                             formApiRef.current?.setValue(
-                              'amount',
-                              Number(quotaToDisplayAmount(quota).toFixed(6)),
+                              'quota',
+                              displayAmountToQuota(amount),
                             );
                           }}
-                          style={{ width: '100%' }}
                           showClear
                         />
+                        <div
+                          className='text-xs cursor-pointer mt-1'
+                          style={{ color: 'var(--semi-color-text-2)' }}
+                          onClick={() => setShowQuotaInput((v) => !v)}
+                        >
+                          {showQuotaInput
+                            ? `▾ ${t('收起原生额度输入')}`
+                            : `▸ ${t('使用原生额度输入')}`}
+                        </div>
+                        <div style={{ display: showQuotaInput ? 'block' : 'none' }} className='mt-2'>
+                          <Form.InputNumber
+                            field='quota'
+                            label={t('额度')}
+                            placeholder={t('输入额度')}
+                            rules={[
+                              { required: values.plan_id === 0, message: t('请输入额度') },
+                              {
+                                validator: (rule, v) => {
+                                  if (values.plan_id !== 0) return Promise.resolve();
+                                  const num = parseInt(v, 10);
+                                  return num > 0
+                                    ? Promise.resolve()
+                                    : Promise.reject(t('额度必须大于0'));
+                                },
+                              },
+                            ]}
+                            onChange={(val) => {
+                              const quota = val === '' || val == null ? 0 : val;
+                              formApiRef.current?.setValue('quota', quota);
+                              formApiRef.current?.setValue(
+                                'amount',
+                                Number(quotaToDisplayAmount(quota).toFixed(6)),
+                              );
+                            }}
+                            style={{ width: '100%' }}
+                            showClear
+                          />
+                        </div>
+                      </Col>
+                    </Row>
+                  </Card>
+                )}
+
+                {!isEdit && (
+                  <Card className='!rounded-2xl shadow-sm border-0'>
+                    <div className='flex items-center mb-2'>
+                      <Avatar
+                        size='small'
+                        color='orange'
+                        className='mr-2 shadow-md'
+                      >
+                        <IconGift size={16} />
+                      </Avatar>
+                      <div>
+                        <Text className='text-lg font-medium'>
+                          {t('批量设置')}
+                        </Text>
+                        <div className='text-xs text-gray-600'>
+                          {t('设置一次性生成的兑换码数量')}
+                        </div>
                       </div>
-                    </Col>
-                    {!isEdit && (
-                      <Col span={12}>
+                    </div>
+                    <Row gutter={12}>
+                      <Col span={24}>
                         <Form.InputNumber
                           field='count'
                           label={t('生成数量')}
@@ -412,9 +433,9 @@ const EditRedemptionModal = (props) => {
                           showClear
                         />
                       </Col>
-                    )}
-                  </Row>
-                </Card>
+                    </Row>
+                  </Card>
+                )}
               </div>
             )}
           </Form>

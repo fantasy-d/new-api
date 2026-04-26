@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/common/limiter"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/gin-gonic/gin"
@@ -54,7 +54,7 @@ func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, max
 	// 如果在时间窗口内已达到限制，拒绝请求
 	subTime := nowTime.Sub(oldTime).Seconds()
 	if int64(subTime) < duration {
-		rdb.Expire(ctx, key, time.Duration(setting.ModelRequestRateLimitDurationMinutes)*time.Minute)
+		rdb.Expire(ctx, key, time.Duration(duration)*time.Second)
 		return false, nil
 	}
 
@@ -62,7 +62,7 @@ func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, max
 }
 
 // 记录Redis请求
-func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxCount int) {
+func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxCount int, duration int64) {
 	// 如果maxCount为0，不记录请求
 	if maxCount == 0 {
 		return
@@ -71,7 +71,7 @@ func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxC
 	now := time.Now().Format(timeFormat)
 	rdb.LPush(ctx, key, now)
 	rdb.LTrim(ctx, key, 0, int64(maxCount-1))
-	rdb.Expire(ctx, key, time.Duration(setting.ModelRequestRateLimitDurationMinutes)*time.Minute)
+	rdb.Expire(ctx, key, time.Duration(duration)*time.Second)
 }
 
 // Redis限流处理器
@@ -90,32 +90,26 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 			return
 		}
 		if !allowed {
-			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到请求数限制：%d分钟内最多请求%d次", setting.ModelRequestRateLimitDurationMinutes, successMaxCount))
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到成功请求数限制：%d秒内最多请求%d次", duration, successMaxCount))
 			return
 		}
 
-		//2.检查总请求数限制并记录总请求（当totalMaxCount为0时会自动跳过，使用令牌桶限流器
+		//2.检查总请求数限制并记录总请求
 		if totalMaxCount > 0 {
-			totalKey := fmt.Sprintf("rateLimit:%s", userId)
-			// 初始化
-			tb := limiter.New(ctx, rdb)
-			allowed, err = tb.Allow(
-				ctx,
-				totalKey,
-				limiter.WithCapacity(int64(totalMaxCount)*duration),
-				limiter.WithRate(int64(totalMaxCount)),
-				limiter.WithRequested(duration),
-			)
-
+			totalKey := fmt.Sprintf("rateLimit:%s:%s", ModelRequestRateLimitCountMark, userId)
+			// 使用统一的 Redis 限制检测函数
+			allowed, err = checkRedisRateLimit(ctx, rdb, totalKey, totalMaxCount, duration)
 			if err != nil {
 				fmt.Println("检查总请求数限制失败:", err.Error())
 				abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
 				return
 			}
-
 			if !allowed {
-				abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d分钟内最多请求%d次，包括失败次数，请检查您的请求是否正确", setting.ModelRequestRateLimitDurationMinutes, totalMaxCount))
+				abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d秒内最多请求%d次", duration, totalMaxCount))
+				return
 			}
+			// 记录本次总请求
+			recordRedisRequest(ctx, rdb, totalKey, totalMaxCount, duration)
 		}
 
 		// 4. 处理请求
@@ -123,14 +117,14 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 
 		// 5. 如果请求成功，记录成功请求
 		if c.Writer.Status() < 400 {
-			recordRedisRequest(ctx, rdb, successKey, successMaxCount)
+			recordRedisRequest(ctx, rdb, successKey, successMaxCount, duration)
 		}
 	}
 }
 
 // 内存限流处理器
 func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) gin.HandlerFunc {
-	inMemoryRateLimiter.Init(time.Duration(setting.ModelRequestRateLimitDurationMinutes) * time.Minute)
+	inMemoryRateLimiter.Init(time.Duration(duration) * time.Second)
 
 	return func(c *gin.Context) {
 		userId := strconv.Itoa(c.GetInt("id"))
@@ -139,8 +133,7 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 
 		// 1. 检查总请求数限制（当totalMaxCount为0时跳过）
 		if totalMaxCount > 0 && !inMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d秒内最多请求%d次", duration, totalMaxCount))
 			return
 		}
 
@@ -148,8 +141,7 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 		// 使用一个临时key来检查限制，这样可以避免实际记录
 		checkKey := successKey + "_check"
 		if !inMemoryRateLimiter.Request(checkKey, successMaxCount, duration) {
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到成功请求数限制：%d秒内最多请求%d次", duration, successMaxCount))
 			return
 		}
 
@@ -166,13 +158,7 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 // ModelRequestRateLimit 模型请求限流中间件
 func ModelRequestRateLimit() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		// 在每个请求时检查是否启用限流
-		if !setting.ModelRequestRateLimitEnabled {
-			c.Next()
-			return
-		}
-
-		// 计算限流参数
+		// 计算默认限流参数
 		duration := int64(setting.ModelRequestRateLimitDurationMinutes * 60)
 		totalMaxCount := setting.ModelRequestRateLimitCount
 		successMaxCount := setting.ModelRequestRateLimitSuccessCount
@@ -188,6 +174,35 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 		if found {
 			totalMaxCount = groupTotalCount
 			successMaxCount = groupSuccessCount
+		}
+
+		// 检查订阅套餐专属速率限制（优先级最高，且不受全局开关限制）
+		userId := c.GetInt("id")
+		hasSubscriptionLimit := false
+		if userId > 0 {
+			userCache, err := model.GetUserCache(userId)
+			if err == nil && (userCache.RateLimitNum > 0 || userCache.RateLimitSuccess > 0) {
+				totalMaxCount = userCache.RateLimitNum
+				successMaxCount = userCache.RateLimitSuccess
+				duration = int64(userCache.RateLimitDuration)
+				hasSubscriptionLimit = true
+			}
+		}
+
+		if hasSubscriptionLimit {
+			common.SysLog(fmt.Sprintf("[RateLimit] User %d using Subscription limit: Total=%d, Success=%d, Duration=%ds", userId, totalMaxCount, successMaxCount, duration))
+		}
+
+		// 如果既没有套餐限制，也没有开启全局限流，则直接放行
+		if !hasSubscriptionLimit && !setting.ModelRequestRateLimitEnabled {
+			c.Next()
+			return
+		}
+
+		// 如果最终计算出来的限流数值全为 0，也直接放行
+		if totalMaxCount <= 0 && successMaxCount <= 0 {
+			c.Next()
+			return
 		}
 
 		// 根据存储类型选择并执行限流处理器

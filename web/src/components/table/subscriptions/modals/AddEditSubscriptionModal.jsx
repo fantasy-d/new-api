@@ -97,6 +97,10 @@ const AddEditSubscriptionModal = ({
     upgrade_group: '',
     stripe_price_id: '',
     creem_product_id: '',
+    group_identifier: '',
+    request_rate_limit_num: 0,
+    request_rate_limit_success: 0,
+    request_rate_limit_duration: 0,
   });
 
   const buildFormValues = () => {
@@ -123,6 +127,10 @@ const AddEditSubscriptionModal = ({
       upgrade_group: p.upgrade_group || '',
       stripe_price_id: p.stripe_price_id || '',
       creem_product_id: p.creem_product_id || '',
+      group_identifier: p.group_identifier || '',
+      request_rate_limit_num: Number(p.request_rate_limit_num || 0),
+      request_rate_limit_success: Number(p.request_rate_limit_success || 0),
+      request_rate_limit_duration: Number(p.request_rate_limit_duration || 0),
     };
   };
 
@@ -378,6 +386,18 @@ const AddEditSubscriptionModal = ({
                         size='large'
                       />
                     </Col>
+
+                    <Col span={24}>
+                      <Form.Input
+                        field='group_identifier'
+                        label={t('产品组标识 (Group Identifier)')}
+                        placeholder={t('例如：lite_series')}
+                        extraText={t(
+                          '可选。具有相同标识的套餐在购买或兑换时会合并为一个活跃订阅并顺延时长（例如：lite月卡与lite季卡设置相同标识后，购买季卡会自动在现有月卡基础上续期）。',
+                        )}
+                        showClear
+                      />
+                    </Col>
                   </Row>
                 </Card>
 
@@ -540,6 +560,68 @@ const AddEditSubscriptionModal = ({
                       />
                     </Col>
                   </Row>
+                </Card>
+
+                {/* 速率限制设置 */}
+                <Card className='!rounded-2xl shadow-sm border-0 mb-4'>
+                  <div className='flex items-center mb-2'>
+                    <Avatar
+                      size='small'
+                      color='red'
+                      className='mr-2 shadow-md'
+                    >
+                      <Clock size={16} />
+                    </Avatar>
+                    <div>
+                      <Text className='text-lg font-medium'>
+                        {t('速率限制设置')}
+                      </Text>
+                      <div className='text-xs text-gray-600'>
+                        {t('配置该套餐专属的请求频率限制（QPS/RPM）')}
+                      </div>
+                    </div>
+                  </div>
+
+                  <Row gutter={12}>
+                    <Col span={8}>
+                      <Form.InputNumber
+                        field='request_rate_limit_num'
+                        label={t('总请求次数限制')}
+                        min={0}
+                        precision={0}
+                        extraText={t('包含失败请求')}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+
+                    <Col span={8}>
+                      <Form.InputNumber
+                        field='request_rate_limit_success'
+                        label={t('成功请求次数限制')}
+                        min={0}
+                        precision={0}
+                        extraText={t('仅限成功请求')}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+
+                    <Col span={8}>
+                      <Form.InputNumber
+                        field='request_rate_limit_duration'
+                        label={t('限制周期 (秒)')}
+                        min={0}
+                        precision={0}
+                        placeholder={t('例如：60')}
+                        extraText={t('统计周期')}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                  </Row>
+                  <div className='mt-2'>
+                    <Text type='tertiary' size='small'>
+                      {t('注意：0 表示不限制。此设置将覆盖全局/分组限流。系统将应用：总计最多 Y 次，其中成功最多 Z 次。')}
+                    </Text>
+                  </div>
                 </Card>
               </div>
             )}

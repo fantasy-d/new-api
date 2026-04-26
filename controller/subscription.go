@@ -8,7 +8,6 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // ---- Shared types ----
@@ -86,6 +85,28 @@ func UpdateSubscriptionPreference(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"billing_preference": pref})
 }
 
+type BuySubscriptionRequest struct {
+	PlanId int `json:"plan_id"`
+}
+
+func BuySubscription(c *gin.Context) {
+	var req BuySubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	if req.PlanId <= 0 {
+		common.ApiErrorMsg(c, "无效的套餐 ID")
+		return
+	}
+	userId := c.GetInt("id")
+	if err := model.BuySubscriptionWithBalance(userId, req.PlanId); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
+
 // ---- Admin APIs ----
 
 func AdminListSubscriptionPlans(c *gin.Context) {
@@ -145,6 +166,16 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
+	req.Plan.GroupIdentifier = strings.TrimSpace(req.Plan.GroupIdentifier)
+	if req.Plan.RequestRateLimitNum < 0 {
+		req.Plan.RequestRateLimitNum = 0
+	}
+	if req.Plan.RequestRateLimitSuccess < 0 {
+		req.Plan.RequestRateLimitSuccess = 0
+	}
+	if req.Plan.RequestRateLimitDuration < 0 {
+		req.Plan.RequestRateLimitDuration = 0
+	}
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
 			common.ApiErrorMsg(c, "升级分组不存在")
@@ -208,6 +239,16 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
+	req.Plan.GroupIdentifier = strings.TrimSpace(req.Plan.GroupIdentifier)
+	if req.Plan.RequestRateLimitNum < 0 {
+		req.Plan.RequestRateLimitNum = 0
+	}
+	if req.Plan.RequestRateLimitSuccess < 0 {
+		req.Plan.RequestRateLimitSuccess = 0
+	}
+	if req.Plan.RequestRateLimitDuration < 0 {
+		req.Plan.RequestRateLimitDuration = 0
+	}
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
 			common.ApiErrorMsg(c, "升级分组不存在")
@@ -220,37 +261,40 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// update plan (allow zero values updates with map)
-		updateMap := map[string]interface{}{
-			"title":                      req.Plan.Title,
-			"subtitle":                   req.Plan.Subtitle,
-			"price_amount":               req.Plan.PriceAmount,
-			"currency":                   req.Plan.Currency,
-			"duration_unit":              req.Plan.DurationUnit,
-			"duration_value":             req.Plan.DurationValue,
-			"custom_seconds":             req.Plan.CustomSeconds,
-			"enabled":                    req.Plan.Enabled,
-			"sort_order":                 req.Plan.SortOrder,
-			"stripe_price_id":            req.Plan.StripePriceId,
-			"creem_product_id":           req.Plan.CreemProductId,
-			"max_purchase_per_user":      req.Plan.MaxPurchasePerUser,
-			"total_amount":               req.Plan.TotalAmount,
-			"upgrade_group":              req.Plan.UpgradeGroup,
-			"quota_reset_period":         req.Plan.QuotaResetPeriod,
-			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
-			"updated_at":                 common.GetTimestamp(),
-		}
-		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
+	var cleanPlan model.SubscriptionPlan
+	if err := model.DB.First(&cleanPlan, id).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	cleanPlan.Title = req.Plan.Title
+	cleanPlan.Subtitle = req.Plan.Subtitle
+	cleanPlan.PriceAmount = req.Plan.PriceAmount
+	cleanPlan.Currency = req.Plan.Currency
+	cleanPlan.DurationUnit = req.Plan.DurationUnit
+	cleanPlan.DurationValue = req.Plan.DurationValue
+	cleanPlan.CustomSeconds = req.Plan.CustomSeconds
+	cleanPlan.Enabled = req.Plan.Enabled
+	cleanPlan.SortOrder = req.Plan.SortOrder
+	cleanPlan.StripePriceId = req.Plan.StripePriceId
+	cleanPlan.CreemProductId = req.Plan.CreemProductId
+	cleanPlan.MaxPurchasePerUser = req.Plan.MaxPurchasePerUser
+	cleanPlan.TotalAmount = req.Plan.TotalAmount
+	cleanPlan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
+	cleanPlan.QuotaResetPeriod = req.Plan.QuotaResetPeriod
+	cleanPlan.QuotaResetCustomSeconds = req.Plan.QuotaResetCustomSeconds
+	cleanPlan.GroupIdentifier = strings.TrimSpace(req.Plan.GroupIdentifier)
+	cleanPlan.RequestRateLimitNum = req.Plan.RequestRateLimitNum
+	cleanPlan.RequestRateLimitSuccess = req.Plan.RequestRateLimitSuccess
+	cleanPlan.RequestRateLimitDuration = req.Plan.RequestRateLimitDuration
+	cleanPlan.UpdatedAt = common.GetTimestamp()
+
+	if err := model.DB.Save(&cleanPlan).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	model.InvalidateSubscriptionPlanCache(id)
+	_ = model.InvalidateUserCacheByPlanId(id)
 	common.ApiSuccess(c, nil)
 }
 
@@ -274,6 +318,7 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 		return
 	}
 	model.InvalidateSubscriptionPlanCache(id)
+	_ = model.InvalidateUserCacheByPlanId(id)
 	common.ApiSuccess(c, nil)
 }
 

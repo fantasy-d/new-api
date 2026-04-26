@@ -17,6 +17,14 @@ var defaultGroupRatio = map[string]float64{
 
 var groupRatioMap = types.NewRWMap[string, float64]()
 
+var defaultGroupLevel = map[string]int{
+	"default": 1,
+	"vip":     10,
+	"svip":    100,
+}
+
+var groupLevelMap = types.NewRWMap[string, int]()
+
 var defaultGroupGroupRatio = map[string]map[string]float64{
 	"vip": {
 		"edit_this": 0.9,
@@ -34,6 +42,7 @@ var defaultGroupSpecialUsableGroup = map[string]map[string]string{
 
 type GroupRatioSetting struct {
 	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
+	GroupLevel              *types.RWMap[string, int]                `json:"group_level"`
 	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
 }
@@ -45,11 +54,13 @@ func init() {
 	groupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
 
 	groupRatioMap.AddAll(defaultGroupRatio)
+	groupLevelMap.AddAll(defaultGroupLevel)
 	groupGroupRatioMap.AddAll(defaultGroupGroupRatio)
 
 	groupRatioSetting = GroupRatioSetting{
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
 		GroupRatio:              groupRatioMap,
+		GroupLevel:              groupLevelMap,
 		GroupGroupRatio:         groupGroupRatioMap,
 	}
 
@@ -88,6 +99,22 @@ func GetGroupRatio(name string) float64 {
 		return 1
 	}
 	return ratio
+}
+
+func GetGroupLevel(name string) int {
+	level, ok := groupLevelMap.Get(name)
+	if !ok {
+		return 1
+	}
+	return level
+}
+
+func GroupLevel2JSONString() string {
+	return groupLevelMap.MarshalJSONString()
+}
+
+func UpdateGroupLevelByJSONString(jsonStr string) error {
+	return types.LoadFromJsonString(groupLevelMap, jsonStr)
 }
 
 func GetGroupGroupRatio(userGroup, usingGroup string) (float64, bool) {

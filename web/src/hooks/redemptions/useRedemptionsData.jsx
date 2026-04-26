@@ -51,6 +51,7 @@ export const useRedemptionsData = () => {
 
   // UI state
   const [compactMode, setCompactMode] = useTableCompactMode('redemptions');
+  const [plans, setPlans] = useState([]);
 
   // Form state
   const formInitValues = {
@@ -296,6 +297,14 @@ export const useRedemptionsData = () => {
 
   // Initialize data loading
   useEffect(() => {
+    const loadPlans = async () => {
+      const res = await API.get('/api/subscription/plans');
+      const { success, data } = res.data;
+      if (success && data) {
+        setPlans(data.map((item) => item.plan));
+      }
+    };
+    loadPlans().then();
     loadRedemptions(1, pageSize)
       .then()
       .catch((reason) => {
@@ -312,6 +321,7 @@ export const useRedemptionsData = () => {
     pageSize,
     tokenCount,
     selectedKeys,
+    plans,
 
     // Edit state
     editingRedemption,

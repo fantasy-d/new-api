@@ -15,13 +15,16 @@ import (
 
 // UserBase struct remains the same as it represents the cached data structure
 type UserBase struct {
-	Id       int    `json:"id"`
-	Group    string `json:"group"`
-	Email    string `json:"email"`
-	Quota    int    `json:"quota"`
-	Status   int    `json:"status"`
-	Username string `json:"username"`
-	Setting  string `json:"setting"`
+	Id                int    `json:"id"`
+	Group             string `json:"group"`
+	Email             string `json:"email"`
+	Quota             int    `json:"quota"`
+	Status            int    `json:"status"`
+	Username          string `json:"username"`
+	Setting           string `json:"setting"`
+	RateLimitNum      int    `json:"rate_limit_num"`
+	RateLimitSuccess  int    `json:"rate_limit_success"`
+	RateLimitDuration int    `json:"rate_limit_duration"`
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
@@ -108,6 +111,12 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 		Username: user.Username,
 		Setting:  user.Setting,
 		Email:    user.Email,
+	}
+
+	if num, success, duration, found := GetUserActiveSubscriptionRateLimit(user.Id); found {
+		userCache.RateLimitNum = num
+		userCache.RateLimitSuccess = success
+		userCache.RateLimitDuration = duration
 	}
 
 	return userCache, nil
@@ -231,4 +240,27 @@ func GetUserLanguage(userId int) string {
 		return ""
 	}
 	return userCache.GetSetting().Language
+}
+
+func InvalidateUserCacheByPlanId(planId int) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	var userIds []int
+	// 找出所有持有该套餐且活跃的用户
+	err := DB.Table("user_subscriptions").
+		Where("plan_id = ? AND status = ?", planId, "active").
+		Pluck("user_id", &userIds).Error
+	if err != nil {
+		return err
+	}
+	if len(userIds) == 0 {
+		return nil
+	}
+	// 批量删除 Redis 中的用户缓存
+	keys := make([]string, 0, len(userIds))
+	for _, id := range userIds {
+		keys = append(keys, getUserCacheKey(id))
+	}
+	return common.RedisDelKeys(keys)
 }

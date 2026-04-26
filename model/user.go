@@ -62,6 +62,11 @@ func (user *User) ToBaseUser() *UserBase {
 		Setting:  user.Setting,
 		Email:    user.Email,
 	}
+	if num, success, duration, found := GetUserActiveSubscriptionRateLimit(user.Id); found {
+		cache.RateLimitNum = num
+		cache.RateLimitSuccess = success
+		cache.RateLimitDuration = duration
+	}
 	return cache
 }
 

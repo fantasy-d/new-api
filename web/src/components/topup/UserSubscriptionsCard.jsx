@@ -1,0 +1,271 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+import React, { useMemo, useState } from 'react';
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  Divider,
+  Select,
+  Skeleton,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+} from '@douyinfe/semi-ui';
+import { renderQuota } from '../../helpers';
+import { RefreshCw, Sparkles } from 'lucide-react';
+
+const { Text } = Typography;
+
+const UserSubscriptionsCard = ({
+  t,
+  loading = false,
+  plans = [],
+  billingPreference,
+  onChangeBillingPreference,
+  activeSubscriptions = [],
+  allSubscriptions = [],
+  reloadSubscriptionSelf,
+}) => {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await reloadSubscriptionSelf?.();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const hasActiveSubscription = activeSubscriptions.length > 0;
+  const hasAnySubscription = allSubscriptions.length > 0;
+  const disableSubscriptionPreference = !hasActiveSubscription;
+  const isSubscriptionPreference =
+    billingPreference === 'subscription_first' ||
+    billingPreference === 'subscription_only';
+  const displayBillingPreference =
+    disableSubscriptionPreference && isSubscriptionPreference
+      ? 'wallet_first'
+      : billingPreference;
+  const subscriptionPreferenceLabel =
+    billingPreference === 'subscription_only' ? t('仅用订阅') : t('优先订阅');
+
+  const planTitleMap = useMemo(() => {
+    const map = new Map();
+    (plans || []).forEach((p) => {
+      const plan = p?.plan;
+      if (!plan?.id) return;
+      map.set(plan.id, plan.title || '');
+    });
+    return map;
+  }, [plans]);
+
+  // 计算单个订阅的剩余天数
+  const getRemainingDays = (sub) => {
+    if (!sub?.subscription?.end_time) return 0;
+    const now = Date.now() / 1000;
+    const remaining = sub.subscription.end_time - now;
+    return Math.max(0, Math.ceil(remaining / 86400));
+  };
+
+  // 计算单个订阅的使用进度
+  const getUsagePercent = (sub) => {
+    const total = Number(sub?.subscription?.amount_total || 0);
+    const used = Number(sub?.subscription?.amount_used || 0);
+    if (total <= 0) return 0;
+    return Math.round((used / total) * 100);
+  };
+
+  return (
+    <Card className='!rounded-2xl shadow-sm border-0'>
+      <div className='flex items-center justify-between mb-4'>
+        <div className='flex items-center'>
+          <Avatar size='small' color='blue' className='mr-3 shadow-md'>
+            <Sparkles size={16} />
+          </Avatar>
+          <div>
+            <Typography.Text className='text-lg font-medium'>
+              {t('我的订阅')}
+            </Typography.Text>
+            <div className='text-xs'>
+              {hasActiveSubscription
+                ? t('当前有') +
+                  ' ' +
+                  activeSubscriptions.length +
+                  ' ' +
+                  t('个生效订阅')
+                : t('暂无生效订阅')}
+            </div>
+          </div>
+        </div>
+        <div className='flex items-center gap-2'>
+          <Select
+            value={displayBillingPreference}
+            onChange={onChangeBillingPreference}
+            size='small'
+            optionList={[
+              {
+                value: 'subscription_first',
+                label: disableSubscriptionPreference
+                  ? `${t('优先订阅')} (${t('无生效')})`
+                  : t('优先订阅'),
+                disabled: disableSubscriptionPreference,
+              },
+              { value: 'wallet_first', label: t('优先钱包') },
+              {
+                value: 'subscription_only',
+                label: disableSubscriptionPreference
+                  ? `${t('仅用订阅')} (${t('无生效')})`
+                  : t('仅用订阅'),
+                disabled: disableSubscriptionPreference,
+              },
+              { value: 'wallet_only', label: t('仅用钱包') },
+            ]}
+          />
+          <Button
+            size='small'
+            theme='light'
+            type='tertiary'
+            icon={
+              <RefreshCw
+                size={12}
+                className={refreshing ? 'animate-spin' : ''}
+              />
+            }
+            onClick={handleRefresh}
+            loading={refreshing}
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <Skeleton.Paragraph active rows={3} />
+      ) : (
+        <Space vertical style={{ width: '100%' }} spacing={8}>
+          {disableSubscriptionPreference && isSubscriptionPreference && (
+            <Text type='tertiary' size='small'>
+              {t('已保存偏好为')}
+              {subscriptionPreferenceLabel}
+              {t('，当前无生效订阅，将自动使用钱包')}
+            </Text>
+          )}
+
+          {hasAnySubscription ? (
+            <div className='max-h-64 overflow-y-auto pr-1 semi-table-body mt-2'>
+              {allSubscriptions.map((sub, subIndex) => {
+                const isLast = subIndex === allSubscriptions.length - 1;
+                const subscription = sub.subscription;
+                const totalAmount = Number(subscription?.amount_total || 0);
+                const usedAmount = Number(subscription?.amount_used || 0);
+                const remainAmount =
+                  totalAmount > 0 ? Math.max(0, totalAmount - usedAmount) : 0;
+                const planTitle = planTitleMap.get(subscription?.plan_id) || '';
+                const remainDays = getRemainingDays(sub);
+                const usagePercent = getUsagePercent(sub);
+                const now = Date.now() / 1000;
+                const isExpired = (subscription?.end_time || 0) < now;
+                const isCancelled = subscription?.status === 'cancelled';
+                const isActive = subscription?.status === 'active' && !isExpired;
+
+                return (
+                  <div key={subscription?.id || subIndex}>
+                    <div className='flex items-center justify-between text-xs mb-2'>
+                      <div className='flex items-center gap-2'>
+                        <span className='font-medium'>
+                          {planTitle
+                            ? `${planTitle} · ${t('订阅')}`
+                            : `${t('订阅')}`}
+                        </span>
+                        {isActive ? (
+                          <Tag
+                            color='white'
+                            size='small'
+                            shape='circle'
+                            prefixIcon={<Badge dot type='success' />}
+                          >
+                            {t('生效')}
+                          </Tag>
+                        ) : isCancelled ? (
+                          <Tag color='white' size='small' shape='circle'>
+                            {t('已作废')}
+                          </Tag>
+                        ) : (
+                          <Tag color='white' size='small' shape='circle'>
+                            {t('已过期')}
+                          </Tag>
+                        )}
+                      </div>
+                      {isActive && (
+                        <span className='text-gray-500'>
+                          {t('剩余')} {remainDays} {t('天')}
+                        </span>
+                      )}
+                    </div>
+                    <div className='text-xs text-gray-500 mb-2'>
+                      {isActive ? t('至') : isCancelled ? t('作废于') : t('过期于')}{' '}
+                      {new Date((subscription?.end_time || 0) * 1000).toLocaleString()}
+                    </div>
+                    {isActive && subscription?.next_reset_time > 0 && (
+                      <div className='text-xs text-gray-500 mb-2'>
+                        {t('下一次重置')}:{' '}
+                        {new Date(subscription.next_reset_time * 1000).toLocaleString()}
+                      </div>
+                    )}
+                    <div className='text-xs text-gray-500 mb-2'>
+                      {t('总额度')}:{' '}
+                      {totalAmount > 0 ? (
+                        <Tooltip
+                          content={`${t('原生额度')}：${usedAmount}/${totalAmount} · ${t('剩余')} ${remainAmount}`}
+                        >
+                          <span>
+                            {renderQuota(usedAmount)}/
+                            {renderQuota(totalAmount)} · {t('剩余')}{' '}
+                            {renderQuota(remainAmount)}
+                          </span>
+                        </Tooltip>
+                      ) : (
+                        t('不限')
+                      )}
+                      {totalAmount > 0 && (
+                        <span className='ml-2'>
+                          {t('已用')} {usagePercent}%
+                        </span>
+                      )}
+                    </div>
+                    {!isLast && <Divider margin={12} />}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className='text-xs text-gray-500 py-4'>
+              {t('购买套餐后即可享受模型权益')}
+            </div>
+          )}
+        </Space>
+      )}
+    </Card>
+  );
+};
+
+export default UserSubscriptionsCard;

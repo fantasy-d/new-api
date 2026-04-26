@@ -1,0 +1,34 @@
+# --- 第一阶段：前端构建 ---
+FROM node:18-alpine AS frontend-builder
+WORKDIR /web
+# 只复制 package.json，故意不复制 package-lock.json 以避免旧锁文件的冲突
+COPY web/package.json ./
+# 禁用严格的 peer 检查并尝试强制安装
+RUN npm install --legacy-peer-deps --force
+COPY web/ .
+# 增加内存限制防止大项目构建崩溃
+ENV NODE_OPTIONS=--max-old-space-size=2048
+RUN npm run build
+
+# --- 第二阶段：后端构建 ---
+FROM golang:1.24-alpine AS backend-builder
+WORKDIR /build
+# 安装必要的工具
+RUN apk add --no-cache gcc musl-dev
+COPY . .
+# 注入前端构建产物
+COPY --from=frontend-builder /web/build ./web/build
+RUN go mod download
+# 禁用 CGO 进行静态编译
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o new-api main.go
+
+# --- 第三阶段：最终镜像 ---
+FROM alpine:latest
+WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=backend-builder /build/new-api .
+# 确保目录结构正确
+COPY --from=backend-builder /build/web/build ./web/build
+
+EXPOSE 3000
+ENTRYPOINT ["./new-api"]

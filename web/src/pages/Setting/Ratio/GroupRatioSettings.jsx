@@ -52,6 +52,7 @@ const { Text, Title, Paragraph } = Typography;
 
 const OPTION_KEYS = [
   'GroupRatio',
+  'GroupLevel',
   'UserUsableGroups',
   'GroupGroupRatio',
   'group_ratio_setting.group_special_usable_group',
@@ -76,6 +77,7 @@ export default function GroupRatioSettings(props) {
 
   const [inputs, setInputs] = useState({
     GroupRatio: '',
+    GroupLevel: '',
     UserUsableGroups: '',
     GroupGroupRatio: '',
     'group_ratio_setting.group_special_usable_group': '',
@@ -155,8 +157,13 @@ export default function GroupRatioSettings(props) {
   }, [props.options]);
 
   const handleGroupTableChange = useCallback(
-    ({ GroupRatio, UserUsableGroups }) => {
-      setInputs((prev) => ({ ...prev, GroupRatio, UserUsableGroups }));
+    ({ GroupRatio, UserUsableGroups, GroupLevel }) => {
+      setInputs((prev) => ({
+        ...prev,
+        GroupRatio,
+        UserUsableGroups,
+        GroupLevel,
+      }));
     },
     [],
   );
@@ -188,6 +195,7 @@ export default function GroupRatioSettings(props) {
           key={`gt_${dv}`}
           groupRatio={inputs.GroupRatio}
           userUsableGroups={inputs.UserUsableGroups}
+          groupLevel={inputs.GroupLevel}
           onChange={handleGroupTableChange}
         />
       </Form.Section>

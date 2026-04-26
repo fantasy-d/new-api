@@ -113,14 +113,21 @@ func GetRedemptionById(id int) (*Redemption, error) {
 	return &redemption, err
 }
 
-func Redeem(key string, userId int) (quota int, err error) {
+type RedeemResult struct {
+	Quota    int    `json:"quota"`
+	PlanId   int    `json:"plan_id"`
+	PlanName string `json:"plan_name"`
+}
+
+func Redeem(key string, userId int) (result *RedeemResult, err error) {
 	if key == "" {
-		return 0, errors.New("未提供兑换码")
+		return nil, errors.New("未提供兑换码")
 	}
 	if userId == 0 {
-		return 0, errors.New("无效的 user id")
+		return nil, errors.New("无效的 user id")
 	}
 	redemption := &Redemption{}
+	result = &RedeemResult{}
 
 	keyCol := "`key`"
 	if common.UsingPostgreSQL {
@@ -149,14 +156,16 @@ func Redeem(key string, userId int) (quota int, err error) {
 			if err != nil {
 				return err
 			}
-			quota = 0
+			result.Quota = 0
+			result.PlanId = plan.Id
+			result.PlanName = plan.Title
 		} else {
 			// Legacy quota mode
 			err = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
 			if err != nil {
 				return err
 			}
-			quota = redemption.Quota
+			result.Quota = redemption.Quota
 		}
 
 		redemption.RedeemedTime = common.GetTimestamp()
@@ -167,15 +176,15 @@ func Redeem(key string, userId int) (quota int, err error) {
 	})
 	if err != nil {
 		common.SysError("redemption failed: " + err.Error())
-		return 0, err
+		return nil, err
 	}
 
 	if redemption.PlanId > 0 {
-		RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码兑换套餐ID #%d，兑换码ID %d", redemption.PlanId, redemption.Id))
+		RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码兑换套餐ID #%d (%s)，兑换码ID %d", redemption.PlanId, result.PlanName, redemption.Id))
 	} else {
 		RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id))
 	}
-	return quota, nil
+	return result, nil
 }
 
 func (redemption *Redemption) Insert() error {

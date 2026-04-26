@@ -86,7 +86,13 @@ export const getRedemptionsColumns = ({
   redemptions,
   activePage,
   showDeleteRedemptionModal,
+  plans,
 }) => {
+  const planMap = plans.reduce((acc, plan) => {
+    acc[plan.id] = plan.title;
+    return acc;
+  }, {});
+
   return [
     {
       title: t('ID'),
@@ -108,11 +114,12 @@ export const getRedemptionsColumns = ({
       title: t('兑换类型'),
       dataIndex: 'plan_id',
       render: (text) => {
+        const planTitle = planMap[text] || text;
         return (
           <div>
             {text > 0 ? (
               <Tag color='purple' shape='circle'>
-                {t('订阅套餐')} (#{text})
+                {t('订阅套餐')} ({planTitle})
               </Tag>
             ) : (
               <Tag color='cyan' shape='circle'>
