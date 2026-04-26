@@ -94,7 +94,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		Model:  request.Model,
 		Stream: lo.ToPtr(true),
 	}
-	common.SysLog(fmt.Sprintf("Codex request: model=%s, stream=%v, tools=%d", responsesReq.Model, *responsesReq.Stream, len(request.Tools)))
 
 	maxTokens := request.GetMaxTokens()
 	if maxTokens > 0 {
@@ -131,8 +130,8 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 
 	// Convert messages or prompt to input
 	var instructions []string
+	var codexInput []map[string]any
 	if len(request.Messages) > 0 {
-		var codexInput []map[string]any
 		for _, msg := range request.Messages {
 			content := msg.StringContent()
 			if msg.Role == "system" {
@@ -144,13 +143,11 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			contentType := "input_text"
 			if role == "assistant" {
 				contentType = "output_text"
-				// Handle tool_calls in history
 				if content == "" && len(msg.ToolCalls) > 0 {
 					b, _ := json.Marshal(msg.ToolCalls)
 					content = string(b)
 				}
 			} else if role == "tool" {
-				// Codex doesn't have a tool role, wrap it in user message
 				role = "user"
 				content = fmt.Sprintf("Tool result [%s]: %s", msg.ToolCallId, content)
 			}
@@ -170,18 +167,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 			codexInput = append(codexInput, codexMsg)
 		}
-		if len(codexInput) > 0 {
-			input, err := json.Marshal(codexInput)
-			if err != nil {
-				return nil, err
-			}
-			responsesReq.Input = input
-		}
-		if len(instructions) > 0 {
-			if b, err := json.Marshal(strings.Join(instructions, "\n")); err == nil {
-				responsesReq.Instructions = b
-			}
-		}
 	} else if request.Prompt != nil {
 		promptStr := ""
 		switch v := request.Prompt.(type) {
@@ -195,7 +180,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 		if promptStr != "" {
-			codexInput := []map[string]any{
+			codexInput = []map[string]any{
 				{
 					"role": "user",
 					"content": []map[string]any{
@@ -206,13 +191,34 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 					},
 				},
 			}
-			input, err := json.Marshal(codexInput)
-			if err != nil {
-				return nil, err
-			}
-			responsesReq.Input = input
 		}
 	}
+
+	// MANDATORY: Upstream requires at least one input item
+	if len(codexInput) == 0 {
+		codexInput = []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "input_text",
+						"text": "Hello",
+					},
+				},
+			},
+		}
+	}
+
+	input, _ := json.Marshal(codexInput)
+	responsesReq.Input = input
+
+	if len(instructions) > 0 {
+		if b, err := json.Marshal(strings.Join(instructions, "\n")); err == nil {
+			responsesReq.Instructions = b
+		}
+	}
+
+	common.SysLog(fmt.Sprintf("Codex request: model=%s, stream=%v, tools=%d, input_len=%d", responsesReq.Model, *responsesReq.Stream, len(request.Tools), len(codexInput)))
 
 	return a.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 }
@@ -221,49 +227,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	// Upstream Codex ALWAYS requires stream=true
 	request.Stream = lo.ToPtr(true)
 
-	// Fix input format
-	if len(request.Input) > 0 {
-		var inputData any
-		if err := json.Unmarshal(request.Input, &inputData); err == nil {
-			var codexInput []map[string]any
-			switch v := inputData.(type) {
-			case string:
-				codexInput = append(codexInput, map[string]any{
-					"role": "user",
-					"content": []map[string]any{
-						{
-							"type": "input_text",
-							"text": v,
-						},
-					},
-				})
-			case []any:
-				if len(v) > 0 {
-					if _, isStr := v[0].(string); isStr {
-						for _, item := range v {
-							codexInput = append(codexInput, map[string]any{
-								"role": "user",
-								"content": []map[string]any{
-									{
-										"type": "input_text",
-										"text": item.(string),
-									},
-								},
-							})
-						}
-					}
-				}
-			}
-			if codexInput != nil {
-				if newBuf, err := json.Marshal(codexInput); err == nil {
-					request.Input = newBuf
-				}
-			}
-		}
-	}
-
-	common.SysLog(fmt.Sprintf("Final Codex Input: %s", string(request.Input)))
-
+	// Ensure Instructions is never empty
 	if len(request.Instructions) == 0 {
 		systemPrompt := "You are a helpful assistant."
 		if info != nil && info.ChannelSetting.SystemPrompt != "" {
@@ -273,6 +237,8 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 			request.Instructions = b
 		}
 	}
+
+	common.SysLog(fmt.Sprintf("Final Codex Input: %s", string(request.Input)))
 
 	// codex: store must be false
 	request.Store = json.RawMessage("false")
