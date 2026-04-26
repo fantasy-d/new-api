@@ -30,4 +30,4 @@ data/
 .gocache-temp
 .gopath
 
-token_estimator_test.go
+token_estimator_test.go\n# Docker packages\nnew-api-ecs.tar\nnew-api-ecs.tar.gz
