@@ -260,13 +260,22 @@ const SubscriptionPlansCard = ({
               totalAmount > 0
                 ? `${t('总额度')}: ${renderQuota(totalAmount)}`
                 : `${t('总额度')}: ${t('不限')}`;
-            const upgradeLabel = plan?.upgrade_group
-              ? `${t('升级分组')}: ${plan.upgrade_group}`
-              : null;
             const resetLabel =
               formatSubscriptionResetPeriod(plan, t) === t('不重置')
                 ? null
                 : `${t('额度重置')}: ${formatSubscriptionResetPeriod(plan, t)}`;
+            const rateLimitTotal = Number(plan?.request_rate_limit_num || 0);
+            const rateLimitSuccess = Number(plan?.request_rate_limit_success || 0);
+            const rateLimitDuration = Number(plan?.request_rate_limit_duration || 0);
+            const rateLimitLabel =
+              rateLimitTotal > 0
+                ? `${t('总请求限制')}: ${rateLimitTotal}/${rateLimitDuration}s`
+                : null;
+            const successLimitLabel =
+              rateLimitSuccess > 0
+                ? `${t('成功限制')}: ${rateLimitSuccess}/${rateLimitDuration}s`
+                : null;
+
             const planBenefits = [
               {
                 label: `${t('有效期')}: ${formatSubscriptionDuration(plan, t)}`,
@@ -278,30 +287,20 @@ const SubscriptionPlansCard = ({
                     tooltip: `${t('原生额度')}：${totalAmount}`,
                   }
                 : { label: totalLabel },
+              rateLimitLabel ? { label: rateLimitLabel } : null,
+              successLimitLabel ? { label: successLimitLabel } : null,
               limitLabel ? { label: limitLabel } : null,
-              upgradeLabel ? { label: upgradeLabel } : null,
             ].filter(Boolean);
 
             return (
               <Card
                 key={plan?.id}
-                className={`!rounded-xl transition-all hover:shadow-lg w-full h-full ${
-                  isPopular ? 'ring-2 ring-purple-500' : ''
-                }`}
+                className='!rounded-xl transition-all hover:shadow-lg w-full h-full'
                 bodyStyle={{ padding: 0 }}
               >
-                <div className='p-4 h-full flex flex-col'>
-                  {/* 推荐标签 */}
-                  {isPopular && (
-                    <div className='mb-2'>
-                      <Tag color='purple' shape='circle' size='small'>
-                        <Sparkles size={10} className='mr-1' />
-                        {t('推荐')}
-                      </Tag>
-                    </div>
-                  )}
+                <div className='p-4 h-full flex flex-col items-center text-center'>
                   {/* 套餐名称 */}
-                  <div className='mb-3'>
+                  <div className='mb-3 w-full'>
                     <Typography.Title
                       heading={5}
                       ellipsis={{ rows: 1, showTooltip: true }}
@@ -322,8 +321,8 @@ const SubscriptionPlansCard = ({
                   </div>
 
                   {/* 价格区域 */}
-                  <div className='py-2'>
-                    <div className='flex items-baseline justify-start'>
+                  <div className='py-2 w-full'>
+                    <div className='flex items-baseline justify-center'>
                       <span className='text-xl font-bold text-purple-600'>
                         {symbol}
                       </span>
@@ -334,10 +333,10 @@ const SubscriptionPlansCard = ({
                   </div>
 
                   {/* 套餐权益描述 */}
-                  <div className='flex flex-col items-start gap-1 pb-2'>
+                  <div className='flex flex-col items-center gap-1 pb-2 w-full'>
                     {planBenefits.map((item) => {
                       const content = (
-                        <div className='flex items-center gap-2 text-xs text-gray-500'>
+                        <div className='flex items-center gap-2 text-xs text-gray-500 justify-center'>
                           <Badge dot type='tertiary' />
                           <span>{item.label}</span>
                         </div>
@@ -346,7 +345,7 @@ const SubscriptionPlansCard = ({
                         return (
                           <div
                             key={item.label}
-                            className='w-full flex justify-start'
+                            className='w-full flex justify-center'
                           >
                             {content}
                           </div>
@@ -354,7 +353,7 @@ const SubscriptionPlansCard = ({
                       }
                       return (
                         <Tooltip key={item.label} content={item.tooltip}>
-                          <div className='w-full flex justify-start'>
+                          <div className='w-full flex justify-center'>
                             {content}
                           </div>
                         </Tooltip>
