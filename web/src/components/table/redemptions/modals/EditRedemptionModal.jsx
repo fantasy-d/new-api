@@ -63,6 +63,7 @@ const EditRedemptionModal = (props) => {
   const isMobile = useIsMobile();
   const formApiRef = useRef(null);
   const [showQuotaInput, setShowQuotaInput] = useState(false);
+  const [plans, setPlans] = useState([]);
 
   const getInitValues = () => ({
     name: '',
@@ -70,10 +71,19 @@ const EditRedemptionModal = (props) => {
     amount: Number(quotaToDisplayAmount(100000).toFixed(6)),
     count: 1,
     expired_time: null,
+    plan_id: 0,
   });
 
   const handleCancel = () => {
     props.handleClose();
+  };
+
+  const loadPlans = async () => {
+    const res = await API.get('/api/subscription/plans');
+    const { success, data } = res.data;
+    if (success && data) {
+      setPlans(data.map(item => item.plan));
+    }
   };
 
   const loadRedemption = async () => {
@@ -95,6 +105,10 @@ const EditRedemptionModal = (props) => {
   };
 
   useEffect(() => {
+    loadPlans().then();
+  }, []);
+
+  useEffect(() => {
     if (formApiRef.current) {
       if (isEdit) {
         loadRedemption();
@@ -113,8 +127,8 @@ const EditRedemptionModal = (props) => {
     let localInputs = { ...values };
     localInputs.count = parseInt(localInputs.count) || 0;
     localInputs.quota = displayAmountToQuota(localInputs.amount);
-    if (localInputs.quota <= 0) {
-      showError(t('请输入金额'));
+    if (localInputs.quota <= 0 && (!localInputs.plan_id || localInputs.plan_id === 0)) {
+      showError(t('请输入金额或选择一个订阅套餐'));
       setLoading(false);
       return;
     }
@@ -263,6 +277,27 @@ const EditRedemptionModal = (props) => {
                         }
                         showClear
                       />
+                    </Col>
+                    <Col span={24}>
+                      <Form.Select
+                        field='plan_id'
+                        label={t('绑定订阅套餐（可选）')}
+                        placeholder={t('如果不选择，则为普通额度兑换码')}
+                        style={{ width: '100%' }}
+                        showClear
+                        onChange={(val) => {
+                          if (val && val !== 0) {
+                            // If plan is selected, maybe set amount/quota to 0 or leave as is
+                          }
+                        }}
+                      >
+                        <Form.Select.Option value={0}>{t('不绑定套餐（仅充值额度）')}</Form.Select.Option>
+                        {plans.map(plan => (
+                          <Form.Select.Option key={plan.id} value={plan.id}>
+                            {plan.title} ({plan.price_amount} {plan.currency})
+                          </Form.Select.Option>
+                        ))}
+                      </Form.Select>
                     </Col>
                     <Col span={24}>
                       <Form.DatePicker
