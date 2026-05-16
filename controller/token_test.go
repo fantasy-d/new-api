@@ -238,6 +238,48 @@ func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), token.Key) {
 		t.Fatalf("update response leaked raw token key: %s", recorder.Body.String())
 	}
+
+	var updated model.Token
+	if err := db.First(&updated, token.Id).Error; err != nil {
+		t.Fatalf("failed to reload updated token: %v", err)
+	}
+	if updated.RemainQuota != unlimitedTokenRemainQuota {
+		t.Fatalf("expected unlimited token remain_quota to be %d, got %d", unlimitedTokenRemainQuota, updated.RemainQuota)
+	}
+}
+
+func TestAddTokenUnlimitedQuotaUsesDefaultRemainQuota(t *testing.T) {
+	setupTokenControllerTestDB(t)
+
+	body := map[string]any{
+		"name":                 "new-token",
+		"expired_time":         -1,
+		"remain_quota":         0,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected success response, got message: %s", response.Message)
+	}
+
+	var token model.Token
+	if err := model.DB.Where("user_id = ? AND name = ?", 1, "new-token").First(&token).Error; err != nil {
+		t.Fatalf("failed to load created token: %v", err)
+	}
+	if !token.UnlimitedQuota {
+		t.Fatalf("expected created token to remain unlimited")
+	}
+	if token.RemainQuota != unlimitedTokenRemainQuota {
+		t.Fatalf("expected created unlimited token remain_quota to be %d, got %d", unlimitedTokenRemainQuota, token.RemainQuota)
+	}
 }
 
 func TestGetTokenKeyRequiresOwnershipAndReturnsFullKey(t *testing.T) {

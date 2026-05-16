@@ -58,6 +58,7 @@ import { useTranslation } from 'react-i18next';
 import { StatusContext } from '../../../../context/Status';
 
 const { Text, Title } = Typography;
+const UNLIMITED_TOKEN_REMAIN_QUOTA = 9999999;
 
 const EditTokenModal = (props) => {
   const { t } = useTranslation();
@@ -220,7 +221,7 @@ const EditTokenModal = (props) => {
     if (isEdit) {
       let { tokenCount: _tc, ...localInputs } = values;
       localInputs.remain_quota = localInputs.unlimited_quota
-        ? 0
+        ? UNLIMITED_TOKEN_REMAIN_QUOTA
         : displayAmountToQuota(localInputs.remain_amount);
       if (!localInputs.unlimited_quota && localInputs.remain_quota <= 0) {
         showError(t('请输入金额'));
@@ -263,7 +264,7 @@ const EditTokenModal = (props) => {
           localInputs.name = baseName;
         }
         localInputs.remain_quota = localInputs.unlimited_quota
-          ? 0
+          ? UNLIMITED_TOKEN_REMAIN_QUOTA
           : displayAmountToQuota(localInputs.remain_amount);
         if (!localInputs.unlimited_quota && localInputs.remain_quota <= 0) {
           showError(t('请输入金额'));
