@@ -96,7 +96,18 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
+	if requestId == "" {
+		// 尝试从 Header 恢复
+		requestId = c.Request.Header.Get(common.RequestIdKey)
+		if requestId == "" {
+			// 最终兜底：生成一个 fallback ID
+			requestId = common.GetTimeString() + "efb" + common.GetRandomString(8)
+		}
+	}
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	if upstreamRequestId == "" {
+		upstreamRequestId = c.Request.Header.Get(common.UpstreamRequestIdKey)
+	}
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -159,7 +170,18 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
+	if requestId == "" {
+		// 尝试从 Header 恢复
+		requestId = c.Request.Header.Get(common.RequestIdKey)
+		if requestId == "" {
+			// 最终兜底：生成一个 fallback ID
+			requestId = common.GetTimeString() + "fb" + common.GetRandomString(8)
+		}
+	}
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	if upstreamRequestId == "" {
+		upstreamRequestId = c.Request.Header.Get(common.UpstreamRequestIdKey)
+	}
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
 	needRecordIp := false

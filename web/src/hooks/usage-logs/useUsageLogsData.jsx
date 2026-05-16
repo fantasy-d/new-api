@@ -382,16 +382,28 @@ export const useLogsData = () => {
       let other = getLogOther(logs[i].other);
       let expandDataLocal = [];
 
+      // 本系统 Request ID 全量搜寻
+      const localID = logs[i].request_id || logs[i].requestId || other?.request_id;
+      if (localID) {
+        expandDataLocal.push({
+          key: t('Request ID'),
+          value: localID,
+        });
+      }
+
+      // 上游 Request ID 全量搜寻
+      const upID = logs[i].upstream_request_id || logs[i].upstreamRequestId || other?.u_req_id || other?.upstream_request_id;
+      if (isAdminUser && upID) {
+        expandDataLocal.push({
+          key: t('上游 Request ID'),
+          value: upID,
+        });
+      }
+
       if (isAdminUser && (logs[i].type === 0 || logs[i].type === 2 || logs[i].type === 6)) {
         expandDataLocal.push({
           key: t('渠道信息'),
           value: `${logs[i].channel} - ${logs[i].channel_name || '[未知]'}`,
-        });
-      }
-      if (logs[i].request_id) {
-        expandDataLocal.push({
-          key: t('Request ID'),
-          value: logs[i].request_id,
         });
       }
       if (other?.ws || other?.audio) {

@@ -30,6 +30,7 @@ import AnnouncementsPanel from './AnnouncementsPanel';
 import FaqPanel from './FaqPanel';
 import UptimePanel from './UptimePanel';
 import SearchModal from './modals/SearchModal';
+import PerformanceMonitor from '../performance/PerformanceMonitor';
 
 import { useDashboardData } from '../../hooks/dashboard/useDashboardData';
 import { useDashboardStats } from '../../hooks/dashboard/useDashboardStats';
@@ -279,6 +280,7 @@ const Dashboard = () => {
           </div>
         </div>
       )}
+      <PerformanceMonitor />
     </div>
   );
 };
