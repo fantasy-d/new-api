@@ -334,17 +334,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			request.Temperature = nil
 		}
 
-		// gpt-5系列模型适配 归零不再支持的参数
-		if strings.HasPrefix(info.UpstreamModelName, "gpt-5") {
-			request.Temperature = nil
-			request.TopP = nil
-			request.LogProbs = nil
-			// 强制开启流式，适配某些 Codex 类上游
-			info.IsStream = true
-			request.Stream = lo.ToPtr(true)
-			common.SysLog(fmt.Sprintf("OpenAI request (gpt-5): model=%s, stream=%v", request.Model, *request.Stream))
-		}
-
 		// 转换模型推理力度后缀
 		effort, originModel := parseReasoningEffortFromModelSuffix(info.UpstreamModelName)
 		if effort != "" {

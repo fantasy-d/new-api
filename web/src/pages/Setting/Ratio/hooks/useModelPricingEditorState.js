@@ -84,16 +84,9 @@ const ratioToBasePrice = (ratio) => {
 };
 
 const normalizeCompletionRatioMeta = (rawMeta) => {
-  if (!rawMeta || typeof rawMeta !== 'object' || Array.isArray(rawMeta)) {
-    return {
-      locked: false,
-      ratio: '',
-    };
-  }
-
   return {
-    locked: Boolean(rawMeta.locked),
-    ratio: toNumericString(rawMeta.ratio),
+    locked: false, // 强行解锁所有模型
+    ratio: '',
   };
 };
 

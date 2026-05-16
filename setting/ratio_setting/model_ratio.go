@@ -517,33 +517,33 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 		if strings.HasPrefix(name, "gpt-5") {
 			if strings.HasPrefix(name, "gpt-5.4") {
 				if strings.HasPrefix(name, "gpt-5.4-nano") {
-					return 6.25, true
+					return 6.25, false
 				}
-				return 6, true
+				return 6, false
 			}
-			return 8, true
+			return 8, false
 		}
 		// gpt-4.5-preview匹配
 		if strings.HasPrefix(name, "gpt-4.5-preview") {
-			return 2, true
+			return 2, false
 		}
 		if strings.HasPrefix(name, "gpt-4-turbo") || strings.HasSuffix(name, "gpt-4-1106") || strings.HasSuffix(name, "gpt-4-1105") {
-			return 3, true
+			return 3, false
 		}
 		// 没有特殊标记的 gpt-4 模型默认倍率为 2
 		return 2, false
 	}
 	if strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3") {
-		return 4, true
+		return 4, false
 	}
 	if name == "chatgpt-4o-latest" {
 		return 3, true
 	}
 
 	if strings.Contains(name, "claude-3") {
-		return 5, true
+		return 5, false
 	} else if strings.Contains(name, "claude-sonnet-4") || strings.Contains(name, "claude-opus-4") || strings.Contains(name, "claude-haiku-4") {
-		return 5, true
+		return 5, false
 	}
 
 	if strings.HasPrefix(name, "gpt-3.5") {
